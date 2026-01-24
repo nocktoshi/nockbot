@@ -185,7 +185,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("📊 Get Proofrate", callback_data="proofrate")],
         [
             InlineKeyboardButton(f"⭐ Subscribe ({SUBSCRIPTION_PRICE_STARS} Stars)", callback_data="subscribe"),
-            InlineKeyboardButton("💎 Lifetime (1000 NOCK)", url="https://t.me/nocktoshi"),
+            InlineKeyboardButton("💎 Lifetime (1000 ℕOCK)", url="https://t.me/nocktoshi"),
         ],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")],
     ]
@@ -204,7 +204,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /setalerts - Configure floor/ceiling\n\n"
         "<b>💰 Pricing:</b>\n"
         f"• ⭐ {SUBSCRIPTION_PRICE_STARS} Stars = {SUBSCRIPTION_DURATION_DAYS} days\n"
-        "• 💎 1000 NOCK = LIFETIME (DM @nocktoshi)\n",
+        "• 💎 1000 ℕOCK = LIFETIME (DM @nocktoshi)\n",
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
         disable_web_page_preview=True,
@@ -235,8 +235,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>/status</b>\n"
         "Check bot status and subscriber count\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>⭐ Premium ({SUBSCRIPTION_PRICE_STARS} Stars / {SUBSCRIPTION_DURATION_DAYS} days):</b>\n\n"
-        f"<b>ℕOCK Premium (1000 ℕOCK / LIFETIME SUBSCRIPTION) contact @nocktoshi for details:</b>\n\n"
+        "<b>⭐ Premium Alerts:</b>\n\n"
         "<b>/subscribe</b>\n"
         "Subscribe for automatic alerts (sent to your DMs)\n\n"
         "<b>/subscription</b>\n"
@@ -246,7 +245,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>/resetalerts</b>\n"
         "Reset thresholds to defaults\n\n"
         "<b>/unsubscribe</b>\n"
-        "Cancel your subscription\n\n",
+        "Cancel your subscription\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>💰 Pricing:</b>\n"
+        f"• ⭐ {SUBSCRIPTION_PRICE_STARS} Stars = {SUBSCRIPTION_DURATION_DAYS} days\n"
+        "• 💎 1000 ℕOCK = LIFETIME (DM @nocktoshi)\n",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
@@ -326,7 +329,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"✓ Custom alert thresholds\n"
             f"✓ Alerts below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s\n"
             f"✓ Direct DM notifications\n\n"
-            f"💎 Want LIFETIME? Pay 1000 NOCK - DM @nocktoshi"
+            f"💎 Want LIFETIME? Pay 1000 ℕOCK - DM @nocktoshi"
         ),
         payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
         provider_token="",  # Empty for Telegram Stars
@@ -735,7 +738,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     f"✓ Custom alert thresholds\n"
                     f"✓ Alerts below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s\n"
                     f"✓ Direct DM notifications\n\n"
-                    f"💎 Want LIFETIME? Pay 1000 NOCK - DM @nocktoshi"
+                    f"💎 Want LIFETIME? Pay 1000 ℕOCK - DM @nocktoshi"
                 ),
                 payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
                 provider_token="",  # Empty for Telegram Stars
