@@ -7,15 +7,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ChatMemberHandler,
+    InlineQueryHandler,
     ContextTypes,
 )
 from telegram.constants import ParseMode, ChatMemberStatus
+from uuid import uuid4
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import (
@@ -352,6 +354,97 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
 
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline queries - allows users to query the bot from any chat."""
+    query = update.inline_query.query.lower().strip()
+    results = []
+    
+    # Always show available options
+    if not query or query in "hashrate" or query in "proofrate" or query in "metrics":
+        metrics = await get_metrics()
+        if metrics:
+            results.append(
+                InlineQueryResultArticle(
+                    id=str(uuid4()),
+                    title="📊 Mining Metrics",
+                    description=f"Proofrate: {metrics.proofrate} | Difficulty: {metrics.difficulty}",
+                    input_message_content=InputTextMessageContent(
+                        metrics.format_message(),
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    ),
+                )
+            )
+    
+    if not query or query in "tip" or query in "block" or query in "latest":
+        block = await get_tip()
+        if block:
+            from datetime import datetime, timezone
+            height = block.get("height", "N/A")
+            timestamp = block.get("timestamp", 0)
+            digest = block.get("digest", "N/A")
+            epoch = block.get("epochCounter", "N/A")
+            
+            if timestamp:
+                dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                time_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            else:
+                time_str = "N/A"
+            
+            message = (
+                f"🧊 <b>Latest Block</b>\n\n"
+                f"├ Height: <code>{height}</code>\n"
+                f"├ Epoch: <code>{epoch}</code>\n"
+                f"├ Time: <code>{time_str}</code>\n"
+                f"└ Hash: <code>{digest[:16]}...</code>\n\n"
+                f"🔗 <a href='https://nockblocks.com/block/{height}'>View on NockBlocks</a>"
+            )
+            
+            results.append(
+                InlineQueryResultArticle(
+                    id=str(uuid4()),
+                    title="🧊 Latest Block",
+                    description=f"Block #{height} | Epoch {epoch}",
+                    input_message_content=InputTextMessageContent(
+                        message,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    ),
+                )
+            )
+    
+    if not query or query in "volume" or query in "transactions" or query in "24h":
+        data = await get_24h_volume()
+        if data:
+            vol = data['volume_nock']
+            tx_count = data['tx_count']
+            block_count = data['block_count']
+            vol_str = f"{vol:,.0f}" if vol >= 1000 else f"{vol:,.2f}"
+            
+            message = (
+                f"💰 <b>24h Transaction Volume</b>\n\n"
+                f"├ Volume: <code>{vol_str} NOCK</code>\n"
+                f"├ Transactions: <code>{tx_count}</code>\n"
+                f"└ Blocks: <code>{block_count}</code>\n\n"
+                f"🔗 <a href='https://nockblocks.com/metrics'>View on NockBlocks</a>"
+            )
+            
+            results.append(
+                InlineQueryResultArticle(
+                    id=str(uuid4()),
+                    title="💰 24h Volume",
+                    description=f"{vol_str} NOCK | {tx_count} transactions",
+                    input_message_content=InputTextMessageContent(
+                        message,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    ),
+                )
+            )
+    
+    await update.inline_query.answer(results, cache_time=60)
+
+
 async def track_chat_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Track when bot is added or removed from group chats."""
     result = update.my_chat_member
@@ -469,6 +562,7 @@ def main() -> None:
     app.add_handler(CommandHandler("tip", tip))
     app.add_handler(CommandHandler("volume", volume))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(ChatMemberHandler(track_chat_membership, ChatMemberHandler.MY_CHAT_MEMBER))
     
     # Set up periodic monitoring
