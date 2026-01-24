@@ -207,13 +207,17 @@ async def tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Format timestamp
         if timestamp:
-            from datetime import datetime
-            dt = datetime.fromtimestamp(timestamp)
+            from datetime import datetime, timezone
+            import time
+            
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             time_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
             
-            # Calculate time ago
-            seconds_ago = int(datetime.now().timestamp() - timestamp)
-            if seconds_ago < 60:
+            # Calculate time ago using current UTC time
+            seconds_ago = int(time.time() - timestamp)
+            if seconds_ago < 0:
+                ago_str = "just now"
+            elif seconds_ago < 60:
                 ago_str = f"{seconds_ago}s ago"
             elif seconds_ago < 3600:
                 ago_str = f"{seconds_ago // 60}m {seconds_ago % 60}s ago"
