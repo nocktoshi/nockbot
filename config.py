@@ -17,11 +17,12 @@ ALERT_CHAT_IDS = [
     if cid.strip()
 ]
 
-# Alert threshold - notify when proofrate drops below this (in MP/s)
-PROOFRATE_ALERT_THRESHOLD = float(os.getenv("PROOFRATE_ALERT_THRESHOLD", "1.0"))
+# Alert thresholds - notify when proofrate goes outside this range (in MP/s)
+PROOFRATE_ALERT_FLOOR = float(os.getenv("PROOFRATE_ALERT_FLOOR", "1.0"))
+PROOFRATE_ALERT_CEILING = float(os.getenv("PROOFRATE_ALERT_CEILING", "2.0"))
 
 # Monitoring interval in minutes
-MONITOR_INTERVAL_MINUTES = int(os.getenv("MONITOR_INTERVAL_MINUTES", "5"))
+MONITOR_INTERVAL_MINUTES = int(os.getenv("MONITOR_INTERVAL_MINUTES", "60"))
 
 # NockBlocks URL
 NOCKBLOCKS_METRICS_URL = "https://nockblocks.com/metrics?tab=mining"

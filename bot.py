@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, InlineQueryResultArticle, InputTextMessageContent
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, InlineQueryResultArticle, InputTextMessageContent, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -23,7 +23,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import (
     TELEGRAM_BOT_TOKEN,
     ALERT_CHAT_IDS,
-    PROOFRATE_ALERT_THRESHOLD,
+    PROOFRATE_ALERT_FLOOR,
+    PROOFRATE_ALERT_CEILING,
     MONITOR_INTERVAL_MINUTES,
 )
 from scraper import get_metrics, get_tip, get_24h_volume, MiningMetrics
@@ -87,7 +88,8 @@ def save_group_chats() -> None:
 
 # Global state
 last_metrics: Optional[MiningMetrics] = None
-alert_triggered = False
+floor_alert_triggered = False
+ceiling_alert_triggered = False
 subscribed_chats: set[int] = load_subscribers()
 group_chats: set[int] = load_group_chats()
 
@@ -142,8 +144,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Block count\n\n"
         "🔔 <b>/subscribe</b>\n"
         "Subscribe to automatic alerts (sent to your DMs):\n"
-        f"• Proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s\n"
-        "• Proofrate recovers above threshold\n\n"
+        f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+        f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
         "🔕 <b>/unsubscribe</b>\n"
         "Stop receiving automatic alerts\n\n"
         "📡 <b>/status</b>\n"
@@ -188,8 +190,8 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🔔 <b>Subscribed to Alerts!</b>\n\n"
         "You will receive notifications when:\n"
-        f"• Proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s\n"
-        "• Proofrate recovers above threshold\n"
+        f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+        f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n"
         f"• Metrics are checked every {MONITOR_INTERVAL_MINUTES} minutes\n\n"
         "Alerts will be sent to your DMs.\n"
         "Use /unsubscribe to stop receiving alerts.",
@@ -218,7 +220,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status_text = "📡 <b>Bot Status</b>\n\n"
     status_text += f"• Monitoring: <code>Active</code>\n"
     status_text += f"• Check Interval: <code>{MONITOR_INTERVAL_MINUTES} min</code>\n"
-    status_text += f"• Alert Threshold: <code>{PROOFRATE_ALERT_THRESHOLD} MP/s</code>\n"
+    status_text += f"• Alert Floor: <code>{PROOFRATE_ALERT_FLOOR} MP/s</code>\n"
+    status_text += f"• Alert Ceiling: <code>{PROOFRATE_ALERT_CEILING} MP/s</code>\n"
     status_text += f"• Subscribers: <code>{len(subscribed_chats)}</code>\n"
     status_text += f"• Group Chats: <code>{len(group_chats)}</code>\n\n"
     
@@ -343,7 +346,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         subscribed_chats.add(update.effective_user.id)
         save_subscribers()
         await query.message.reply_text(
-            f"🔔 Subscribed! You'll get alerts in your DMs when proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s.",
+            f"🔔 Subscribed! You'll get alerts when proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s or rises above {PROOFRATE_ALERT_CEILING} MP/s.",
             parse_mode=ParseMode.HTML,
         )
     
@@ -474,7 +477,7 @@ async def track_chat_membership(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def check_and_alert(app: Application) -> None:
     """Periodic task to check metrics and send alerts."""
-    global last_metrics, alert_triggered
+    global last_metrics, floor_alert_triggered, ceiling_alert_triggered
     
     logger.info("Checking metrics...")
     metrics = await get_metrics()
@@ -492,12 +495,12 @@ async def check_and_alert(app: Application) -> None:
     if not all_recipients:
         return
     
-    # Alert if proofrate drops below threshold
-    if metrics.proofrate_value < PROOFRATE_ALERT_THRESHOLD and not alert_triggered:
-        alert_triggered = True
+    # Alert if proofrate drops below floor
+    if metrics.proofrate_value < PROOFRATE_ALERT_FLOOR and not floor_alert_triggered:
+        floor_alert_triggered = True
         alert_msg = (
-            f"🚨 <b>Proofrate Alert!</b>\n\n"
-            f"Network proofrate has dropped below {PROOFRATE_ALERT_THRESHOLD} MP/s\n\n"
+            f"🔴 <b>Low Proofrate Alert!</b>\n\n"
+            f"Network proofrate has dropped below {PROOFRATE_ALERT_FLOOR} MP/s\n\n"
             f"Current: <code>{metrics.proofrate}</code>\n"
             f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
             f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
@@ -511,14 +514,14 @@ async def check_and_alert(app: Application) -> None:
                     disable_web_page_preview=True,
                 )
             except Exception as e:
-                logger.error(f"Failed to send alert to {chat_id}: {e}")
+                logger.error(f"Failed to send floor alert to {chat_id}: {e}")
     
-    # Alert recovery
-    elif metrics.proofrate_value >= PROOFRATE_ALERT_THRESHOLD and alert_triggered:
-        alert_triggered = False
+    # Floor recovery
+    elif metrics.proofrate_value >= PROOFRATE_ALERT_FLOOR and floor_alert_triggered:
+        floor_alert_triggered = False
         recovery_msg = (
             f"✅ <b>Proofrate Recovered!</b>\n\n"
-            f"Network proofrate is back above {PROOFRATE_ALERT_THRESHOLD} MP/s\n\n"
+            f"Network proofrate is back above {PROOFRATE_ALERT_FLOOR} MP/s\n\n"
             f"Current: <code>{metrics.proofrate}</code>\n"
             f"Difficulty: <code>{metrics.difficulty}</code>"
         )
@@ -530,7 +533,47 @@ async def check_and_alert(app: Application) -> None:
                     parse_mode=ParseMode.HTML,
                 )
             except Exception as e:
-                logger.error(f"Failed to send recovery alert to {chat_id}: {e}")
+                logger.error(f"Failed to send floor recovery alert to {chat_id}: {e}")
+    
+    # Alert if proofrate rises above ceiling
+    if metrics.proofrate_value > PROOFRATE_ALERT_CEILING and not ceiling_alert_triggered:
+        ceiling_alert_triggered = True
+        alert_msg = (
+            f"🚀 <b>High Proofrate Alert!</b>\n\n"
+            f"Network proofrate has risen above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+            f"Current: <code>{metrics.proofrate}</code>\n"
+            f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
+            f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
+        )
+        for chat_id in all_recipients:
+            try:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=alert_msg,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send ceiling alert to {chat_id}: {e}")
+    
+    # Ceiling recovery
+    elif metrics.proofrate_value <= PROOFRATE_ALERT_CEILING and ceiling_alert_triggered:
+        ceiling_alert_triggered = False
+        recovery_msg = (
+            f"📉 <b>Proofrate Normalized</b>\n\n"
+            f"Network proofrate is back below {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+            f"Current: <code>{metrics.proofrate}</code>\n"
+            f"Difficulty: <code>{metrics.difficulty}</code>"
+        )
+        for chat_id in all_recipients:
+            try:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=recovery_msg,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send ceiling recovery alert to {chat_id}: {e}")
 
 
 def main() -> None:
@@ -577,9 +620,24 @@ def main() -> None:
     )
     
     async def on_startup(app: Application) -> None:
-        """Start the scheduler when the bot starts."""
+        """Start the scheduler and set bot commands when the bot starts."""
         scheduler.start()
         logger.info(f"Scheduler started. Checking every {MONITOR_INTERVAL_MINUTES} minutes.")
+        
+        # Set bot commands via API
+        commands = [
+            BotCommand("start", "Start the bot and see options"),
+            BotCommand("hashrate", "Get current mining metrics"),
+            BotCommand("proofrate", "Get current mining metrics"),
+            BotCommand("tip", "Get latest block info"),
+            BotCommand("volume", "Get 24h transaction volume"),
+            BotCommand("subscribe", "Subscribe to proofrate alerts"),
+            BotCommand("unsubscribe", "Stop receiving alerts"),
+            BotCommand("status", "Check bot status"),
+            BotCommand("help", "Show help message"),
+        ]
+        await app.bot.set_my_commands(commands)
+        logger.info("Bot commands registered.")
     
     async def on_shutdown(app: Application) -> None:
         """Stop the scheduler when the bot stops."""
@@ -592,7 +650,8 @@ def main() -> None:
     # Run the bot
     print("🚀 Starting Nockbot...")
     print(f"📊 Monitoring interval: {MONITOR_INTERVAL_MINUTES} minutes")
-    print(f"⚠️  Alert threshold: {PROOFRATE_ALERT_THRESHOLD} MP/s")
+    print(f"⚠️  Alert floor: {PROOFRATE_ALERT_FLOOR} MP/s")
+    print(f"⚠️  Alert ceiling: {PROOFRATE_ALERT_CEILING} MP/s")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
