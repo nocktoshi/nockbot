@@ -26,3 +26,7 @@ MONITOR_INTERVAL_MINUTES = int(os.getenv("MONITOR_INTERVAL_MINUTES", "60"))
 
 # NockBlocks URL
 NOCKBLOCKS_METRICS_URL = "https://nockblocks.com/metrics?tab=mining"
+
+# Subscription pricing (Telegram Stars)
+SUBSCRIPTION_PRICE_STARS = int(os.getenv("SUBSCRIPTION_PRICE_STARS", "1500"))  # Price in Stars
+SUBSCRIPTION_DURATION_DAYS = int(os.getenv("SUBSCRIPTION_DURATION_DAYS", "365"))  # Duration in days

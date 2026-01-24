@@ -3,3 +3,4 @@ venv/
 __pycache__/
 subscribers.json
 group_chats.json
+paid_subscribers.json

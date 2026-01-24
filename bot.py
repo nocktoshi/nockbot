@@ -7,14 +7,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, InlineQueryResultArticle, InputTextMessageContent, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, InlineQueryResultArticle, InputTextMessageContent, BotCommand, LabeledPrice
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ChatMemberHandler,
     InlineQueryHandler,
+    PreCheckoutQueryHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
 from telegram.constants import ParseMode, ChatMemberStatus
 from uuid import uuid4
@@ -26,6 +29,8 @@ from config import (
     PROOFRATE_ALERT_FLOOR,
     PROOFRATE_ALERT_CEILING,
     MONITOR_INTERVAL_MINUTES,
+    SUBSCRIPTION_PRICE_STARS,
+    SUBSCRIPTION_DURATION_DAYS,
 )
 from scraper import get_metrics, get_tip, get_24h_volume, MiningMetrics
 
@@ -39,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Persistence files
 SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
 GROUP_CHATS_FILE = Path(__file__).parent / "group_chats.json"
+PAID_SUBSCRIBERS_FILE = Path(__file__).parent / "paid_subscribers.json"
 
 
 def load_json_set(filepath: Path, key: str) -> set[int]:
@@ -86,19 +92,132 @@ def save_group_chats() -> None:
     save_json_set(GROUP_CHATS_FILE, "group_ids", group_chats)
 
 
+def load_paid_subscribers() -> dict[int, dict]:
+    """Load paid subscribers from disk. Returns dict of user_id -> subscriber data.
+    
+    Subscriber data format:
+    {
+        "expiry": int (timestamp),
+        "floor": float or None (custom floor threshold),
+        "ceiling": float or None (custom ceiling threshold)
+    }
+    """
+    if PAID_SUBSCRIBERS_FILE.exists():
+        try:
+            with open(PAID_SUBSCRIBERS_FILE, "r") as f:
+                data = json.load(f)
+                result = {}
+                for k, v in data.get("subscribers", {}).items():
+                    user_id = int(k)
+                    # Handle migration from old format (just expiry int) to new format (dict)
+                    if isinstance(v, int):
+                        result[user_id] = {"expiry": v, "floor": None, "ceiling": None}
+                    else:
+                        result[user_id] = v
+                return result
+        except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
+            logger.error(f"Failed to load paid subscribers: {e}")
+    return {}
+
+
+def save_paid_subscribers() -> None:
+    """Save paid subscribers to disk."""
+    try:
+        with open(PAID_SUBSCRIBERS_FILE, "w") as f:
+            json.dump({"subscribers": paid_subscribers}, f)
+    except IOError as e:
+        logger.error(f"Failed to save paid subscribers: {e}")
+
+
+def is_subscription_active(user_id: int) -> bool:
+    """Check if a user has an active subscription."""
+    import time
+    sub = paid_subscribers.get(user_id)
+    if sub is None:
+        return False
+    expiry = sub.get("expiry", 0) if isinstance(sub, dict) else sub
+    return expiry > int(time.time())
+
+
+def get_subscription_expiry(user_id: int) -> Optional[int]:
+    """Get the expiry timestamp for a user's subscription, or None if not subscribed."""
+    sub = paid_subscribers.get(user_id)
+    if sub is None:
+        return None
+    return sub.get("expiry") if isinstance(sub, dict) else sub
+
+
+def get_user_thresholds(user_id: int) -> tuple[float, float]:
+    """Get the floor and ceiling thresholds for a user. Returns (floor, ceiling).
+    
+    Uses custom values if set, otherwise falls back to global defaults.
+    """
+    sub = paid_subscribers.get(user_id, {})
+    if isinstance(sub, dict):
+        floor = sub.get("floor") if sub.get("floor") is not None else PROOFRATE_ALERT_FLOOR
+        ceiling = sub.get("ceiling") if sub.get("ceiling") is not None else PROOFRATE_ALERT_CEILING
+    else:
+        floor = PROOFRATE_ALERT_FLOOR
+        ceiling = PROOFRATE_ALERT_CEILING
+    return (floor, ceiling)
+
+
+def set_user_thresholds(user_id: int, floor: Optional[float] = None, ceiling: Optional[float] = None) -> None:
+    """Set custom thresholds for a user. Pass None to reset to default."""
+    if user_id not in paid_subscribers:
+        return
+    
+    sub = paid_subscribers[user_id]
+    if not isinstance(sub, dict):
+        sub = {"expiry": sub, "floor": None, "ceiling": None}
+        paid_subscribers[user_id] = sub
+    
+    if floor is not None:
+        sub["floor"] = floor
+    if ceiling is not None:
+        sub["ceiling"] = ceiling
+    
+    save_paid_subscribers()
+
+
+def activate_subscription(user_id: int, days: int = SUBSCRIPTION_DURATION_DAYS) -> int:
+    """Activate or extend a subscription. Returns new expiry timestamp."""
+    import time
+    
+    sub = paid_subscribers.get(user_id, {})
+    if isinstance(sub, dict):
+        current_expiry = sub.get("expiry", 0)
+    else:
+        current_expiry = sub
+        sub = {"expiry": 0, "floor": None, "ceiling": None}
+    
+    now = int(time.time())
+    
+    # If current subscription is still active, extend from expiry; otherwise start from now
+    base_time = max(current_expiry, now)
+    new_expiry = base_time + (days * 24 * 60 * 60)
+    
+    sub["expiry"] = new_expiry
+    paid_subscribers[user_id] = sub
+    save_paid_subscribers()
+    return new_expiry
+
+
 # Global state
 last_metrics: Optional[MiningMetrics] = None
 floor_alert_triggered = False
 ceiling_alert_triggered = False
-subscribed_chats: set[int] = load_subscribers()
+user_alert_state: dict[int, dict] = {}  # Per-user alert state: {user_id: {"floor_triggered": bool, "ceiling_triggered": bool}}
+subscribed_chats: set[int] = load_subscribers()  # Legacy free subscribers (kept for backwards compatibility)
 group_chats: set[int] = load_group_chats()
+paid_subscribers: dict[int, dict] = load_paid_subscribers()  # user_id -> {expiry, floor, ceiling}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     keyboard = [
         [InlineKeyboardButton("📊 Get Hashrate", callback_data="hashrate")],
-        [InlineKeyboardButton("🔔 Subscribe to Alerts", callback_data="subscribe")],
+        [InlineKeyboardButton(f"🔔 Subscribe (⭐{SUBSCRIPTION_PRICE_STARS})", callback_data="subscribe")],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -106,14 +225,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "⛏️ <b>Nockbot</b>\n\n"
         "I track the proofrate and mining metrics for the Nockchain network.\n\n"
-        "<b>Commands:</b>\n"
+        "<b>Free Commands:</b>\n"
         "• /hashrate - Get current mining metrics\n"
-        "• /proofrate - Same as /hashrate\n"
         "• /tip - Get latest block info\n"
-        "• /volume - Get 24h transaction volume\n"
+        "• /volume - Get 24h transaction volume\n\n"
+        "<b>Premium (⭐ Stars or 1000 NOCK for LIFETIME):</b>\n"
         "• /subscribe - Get alerts when proofrate changes\n"
-        "• /unsubscribe - Stop receiving alerts\n"
-        "• /status - Check bot and monitoring status\n\n"
+        "• /subscription - Check status &amp; set custom thresholds\n"
+        "• /setalerts - Configure your own floor/ceiling\n\n"
         "Data sourced from <a href='https://nockblocks.com'>NockBlocks</a>",
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
@@ -125,31 +244,37 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handle /help command."""
     await update.message.reply_text(
         "⛏️ <b>Nockbot - Help</b>\n\n"
-        "<b>Available Commands:</b>\n\n"
-        "📊 <b>/hashrate</b> or <b>/proofrate</b>\n"
+        "<b>📊 Free Commands:</b>\n\n"
+        "<b>/hashrate</b> or <b>/proofrate</b>\n"
         "Get current network mining metrics including:\n"
         "• Current difficulty\n"
         "• Network proofrate (hashrate)\n"
         "• Average block time\n"
         "• Epoch progress\n\n"
-        "🧊 <b>/tip</b>\n"
+        "<b>/tip</b>\n"
         "Get the latest block info:\n"
         "• Block height and epoch\n"
         "• Timestamp and age\n"
         "• Block hash\n\n"
-        "💰 <b>/volume</b>\n"
+        "<b>/volume</b>\n"
         "Get 24-hour transaction volume:\n"
         "• Total NOCK transferred\n"
         "• Transaction count\n"
         "• Block count\n\n"
-        "🔔 <b>/subscribe</b>\n"
-        "Subscribe to automatic alerts (sent to your DMs):\n"
-        f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
-        f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
-        "🔕 <b>/unsubscribe</b>\n"
-        "Stop receiving automatic alerts\n\n"
-        "📡 <b>/status</b>\n"
+        "<b>/status</b>\n"
         "Check bot status and subscriber count\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>⭐ Premium ({SUBSCRIPTION_PRICE_STARS} Stars / {SUBSCRIPTION_DURATION_DAYS} days):</b>\n\n"
+        "<b>/subscribe</b>\n"
+        "Subscribe for automatic alerts (sent to your DMs)\n\n"
+        "<b>/subscription</b>\n"
+        "Check your subscription status and thresholds\n\n"
+        "<b>/setalerts</b> &lt;floor&gt; &lt;ceiling&gt;\n"
+        "Set custom alert thresholds (e.g., /setalerts 0.5 3.0)\n\n"
+        "<b>/resetalerts</b>\n"
+        "Reset thresholds to defaults\n\n"
+        "<b>/unsubscribe</b>\n"
+        "Cancel your subscription\n\n"
         "🔗 Data sourced from <a href='https://nockblocks.com/metrics?tab=mining'>NockBlocks</a>",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
@@ -182,47 +307,112 @@ async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /subscribe command - subscribes the user (not the chat)."""
+    """Handle /subscribe command - show subscription options or status."""
     user_id = update.effective_user.id
-    subscribed_chats.add(user_id)
-    save_subscribers()
+    
+    # Check if user already has active subscription
+    if is_subscription_active(user_id):
+        from datetime import datetime, timezone
+        expiry = get_subscription_expiry(user_id)
+        expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+        days_left = (expiry - int(datetime.now(timezone.utc).timestamp())) // (24 * 60 * 60)
+        
+        await update.message.reply_text(
+            "✅ <b>You're Already Subscribed!</b>\n\n"
+            f"Your subscription is active until:\n"
+            f"<code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
+            f"({days_left} days remaining)\n\n"
+            "You'll receive alerts when:\n"
+            f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+            f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+            "Use /unsubscribe to cancel your subscription.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    # Show subscription offer with payment button
+    keyboard = [
+        [InlineKeyboardButton(
+            f"⭐ Pay {SUBSCRIPTION_PRICE_STARS} Stars ({SUBSCRIPTION_DURATION_DAYS} days)", 
+            callback_data="buy_subscription"
+        )],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "🔔 <b>Subscribed to Alerts!</b>\n\n"
-        "You will receive notifications when:\n"
-        f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
-        f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n"
-        f"• Metrics are checked every {MONITOR_INTERVAL_MINUTES} minutes\n\n"
-        "Alerts will be sent to your DMs.\n"
-        "Use /unsubscribe to stop receiving alerts.",
+        "🔔 <b>Subscribe to Alerts</b>\n\n"
+        f"Get automatic notifications when the network proofrate changes.\n\n"
+        f"<b>Price:</b> ⭐ {SUBSCRIPTION_PRICE_STARS} Telegram Stars\n"
+        f"<b>Duration:</b> {SUBSCRIPTION_DURATION_DAYS} days\n\n"
+        f"<b>Pay with NOCK:</b> Pay 1000 NOCK for LIFETIME SUBSCRIPTION! DM @nocktoshi for details\n\n"
+        "<b>What you get:</b>\n"
+        f"• Alerts when proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+        f"• Alerts when proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n"
+        f"• Checks every {MONITOR_INTERVAL_MINUTES} minutes\n"
+        "• Alerts sent directly to your DMs\n\n"
+        "Tap the button below to subscribe:",
         parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup,
     )
 
 
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /unsubscribe command - unsubscribes the user."""
     user_id = update.effective_user.id
+    
+    was_paid = user_id in paid_subscribers
+    was_free = user_id in subscribed_chats
+    
+    # Remove from both paid and legacy free subscribers
+    if user_id in paid_subscribers:
+        del paid_subscribers[user_id]
+        save_paid_subscribers()
+    
     subscribed_chats.discard(user_id)
     save_subscribers()
     
-    await update.message.reply_text(
-        "🔕 <b>Unsubscribed from Alerts</b>\n\n"
-        "You will no longer receive automatic notifications.\n"
-        "Use /subscribe to re-enable alerts.",
-        parse_mode=ParseMode.HTML,
-    )
+    if was_paid:
+        await update.message.reply_text(
+            "🔕 <b>Subscription Cancelled</b>\n\n"
+            "Your paid subscription has been cancelled.\n"
+            "You will no longer receive automatic notifications.\n\n"
+            "<i>Note: Refunds are not automatic. Contact support if needed.</i>\n\n"
+            "Use /subscribe to purchase a new subscription.",
+            parse_mode=ParseMode.HTML,
+        )
+    elif was_free:
+        await update.message.reply_text(
+            "🔕 <b>Unsubscribed from Alerts</b>\n\n"
+            "You will no longer receive automatic notifications.\n"
+            "Use /subscribe to re-enable alerts.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ You weren't subscribed to alerts.\n"
+            "Use /subscribe to enable notifications.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /status command."""
     global last_metrics
     
+    # Count active paid subscribers
+    import time
+    now = int(time.time())
+    active_paid = sum(
+        1 for sub in paid_subscribers.values() 
+        if (sub.get("expiry", 0) if isinstance(sub, dict) else sub) > now
+    )
+    
     status_text = "📡 <b>Bot Status</b>\n\n"
     status_text += f"• Monitoring: <code>Active</code>\n"
     status_text += f"• Check Interval: <code>{MONITOR_INTERVAL_MINUTES} min</code>\n"
-    status_text += f"• Alert Floor: <code>{PROOFRATE_ALERT_FLOOR} MP/s</code>\n"
-    status_text += f"• Alert Ceiling: <code>{PROOFRATE_ALERT_CEILING} MP/s</code>\n"
-    status_text += f"• Subscribers: <code>{len(subscribed_chats)}</code>\n"
+    status_text += f"• Default Floor: <code>{PROOFRATE_ALERT_FLOOR} MP/s</code>\n"
+    status_text += f"• Default Ceiling: <code>{PROOFRATE_ALERT_CEILING} MP/s</code>\n"
+    status_text += f"• Paid Subscribers: <code>{active_paid}</code>\n"
     status_text += f"• Group Chats: <code>{len(group_chats)}</code>\n\n"
     
     if last_metrics:
@@ -233,6 +423,170 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status_text += "<i>No metrics cached yet. Use /hashrate to fetch.</i>"
     
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
+
+
+async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /subscription command - show subscription status."""
+    user_id = update.effective_user.id
+    
+    if is_subscription_active(user_id):
+        from datetime import datetime, timezone
+        import time
+        expiry = get_subscription_expiry(user_id)
+        expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+        days_left = (expiry - int(time.time())) // (24 * 60 * 60)
+        hours_left = ((expiry - int(time.time())) % (24 * 60 * 60)) // 3600
+        
+        # Get user's custom thresholds
+        floor, ceiling = get_user_thresholds(user_id)
+        sub = paid_subscribers.get(user_id, {})
+        custom_floor = sub.get("floor") if isinstance(sub, dict) else None
+        custom_ceiling = sub.get("ceiling") if isinstance(sub, dict) else None
+        
+        floor_str = f"<code>{floor} MP/s</code>" + (" (custom)" if custom_floor else " (default)")
+        ceiling_str = f"<code>{ceiling} MP/s</code>" + (" (custom)" if custom_ceiling else " (default)")
+        
+        await update.message.reply_text(
+            "✅ <b>Subscription Active</b>\n\n"
+            f"<b>Status:</b> Active\n"
+            f"<b>Expires:</b> <code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
+            f"<b>Time left:</b> {days_left} days, {hours_left} hours\n\n"
+            "<b>Alert Thresholds:</b>\n"
+            f"• Floor: {floor_str}\n"
+            f"• Ceiling: {ceiling_str}\n\n"
+            "<b>Commands:</b>\n"
+            "• /setalerts &lt;floor&gt; &lt;ceiling&gt; - Set custom thresholds\n"
+            "• /resetalerts - Reset to defaults\n"
+            "• /unsubscribe - Cancel subscription",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        # Check if they have an expired subscription
+        expiry = get_subscription_expiry(user_id)
+        if expiry:
+            from datetime import datetime, timezone
+            expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+            await update.message.reply_text(
+                "❌ <b>Subscription Expired</b>\n\n"
+                f"Your subscription expired on:\n"
+                f"<code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n\n"
+                "Use /subscribe to renew.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await update.message.reply_text(
+                "ℹ️ <b>No Subscription</b>\n\n"
+                "You don't have an active subscription.\n\n"
+                "Use /subscribe to get proofrate alerts!",
+                parse_mode=ParseMode.HTML,
+            )
+
+
+async def setalerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /setalerts command - set custom alert thresholds."""
+    user_id = update.effective_user.id
+    
+    # Check if user has active subscription
+    if not is_subscription_active(user_id):
+        await update.message.reply_text(
+            "❌ <b>Subscription Required</b>\n\n"
+            "Custom alert thresholds are a premium feature.\n"
+            "Use /subscribe to get started!",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    # Parse arguments
+    args = context.args
+    if not args or len(args) != 2:
+        floor, ceiling = get_user_thresholds(user_id)
+        await update.message.reply_text(
+            "⚙️ <b>Set Custom Alert Thresholds</b>\n\n"
+            "<b>Usage:</b> <code>/setalerts &lt;floor&gt; &lt;ceiling&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setalerts 0.5 3.0</code>\n"
+            "Alert when below 0.5 MP/s or above 3.0 MP/s\n\n"
+            f"<b>Your current thresholds:</b>\n"
+            f"• Floor: {floor} MP/s\n"
+            f"• Ceiling: {ceiling} MP/s\n\n"
+            "Use /resetalerts to restore defaults.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    try:
+        floor = float(args[0])
+        ceiling = float(args[1])
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid values. Please use numbers.\n\n"
+            "<b>Example:</b> <code>/setalerts 0.5 3.0</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    # Validate ranges
+    if floor < 0 or ceiling < 0:
+        await update.message.reply_text(
+            "❌ Thresholds must be positive numbers.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    if floor >= ceiling:
+        await update.message.reply_text(
+            "❌ Floor must be less than ceiling.\n\n"
+            f"You provided: floor={floor}, ceiling={ceiling}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    # Set thresholds
+    set_user_thresholds(user_id, floor=floor, ceiling=ceiling)
+    
+    # Reset user's alert state to trigger fresh alerts
+    if user_id in user_alert_state:
+        del user_alert_state[user_id]
+    
+    await update.message.reply_text(
+        "✅ <b>Thresholds Updated!</b>\n\n"
+        f"<b>New settings:</b>\n"
+        f"• Alert when below: <code>{floor} MP/s</code>\n"
+        f"• Alert when above: <code>{ceiling} MP/s</code>\n\n"
+        "You'll receive alerts based on these thresholds.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def resetalerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /resetalerts command - reset to default thresholds."""
+    user_id = update.effective_user.id
+    
+    if not is_subscription_active(user_id):
+        await update.message.reply_text(
+            "❌ You don't have an active subscription.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    
+    # Reset thresholds to None (will use defaults)
+    sub = paid_subscribers.get(user_id, {})
+    if isinstance(sub, dict):
+        sub["floor"] = None
+        sub["ceiling"] = None
+        save_paid_subscribers()
+    
+    # Reset alert state
+    if user_id in user_alert_state:
+        del user_alert_state[user_id]
+    
+    await update.message.reply_text(
+        "✅ <b>Thresholds Reset!</b>\n\n"
+        f"Your alerts will now use the default thresholds:\n"
+        f"• Floor: <code>{PROOFRATE_ALERT_FLOOR} MP/s</code>\n"
+        f"• Ceiling: <code>{PROOFRATE_ALERT_CEILING} MP/s</code>",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -342,19 +696,95 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode=ParseMode.HTML,
             )
     
-    elif query.data == "subscribe":
-        subscribed_chats.add(update.effective_user.id)
-        save_subscribers()
-        await query.message.reply_text(
-            f"🔔 Subscribed! You'll get alerts when proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s or rises above {PROOFRATE_ALERT_CEILING} MP/s.",
-            parse_mode=ParseMode.HTML,
-        )
+    elif query.data == "subscribe" or query.data == "buy_subscription":
+        # Send payment invoice
+        await send_subscription_invoice(update, context)
     
     elif query.data == "help":
         await query.message.reply_text(
             "Use /help to see all available commands.",
             parse_mode=ParseMode.HTML,
         )
+
+
+async def send_subscription_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a Telegram Stars invoice for subscription."""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Check if already subscribed
+    if is_subscription_active(user_id):
+        from datetime import datetime, timezone
+        expiry = get_subscription_expiry(user_id)
+        expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+        
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                f"✅ You already have an active subscription until {expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+    
+    # Create invoice
+    await context.bot.send_invoice(
+        chat_id=chat_id,
+        title="Nockbot Pro Subscription",
+        description=f"Get proofrate alerts for {SUBSCRIPTION_DURATION_DAYS} days. "
+                    f"Alerts when proofrate goes below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s.",
+        payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
+        currency="XTR",  # Telegram Stars
+        prices=[LabeledPrice(f"{SUBSCRIPTION_DURATION_DAYS}-day alerts", SUBSCRIPTION_PRICE_STARS)],
+    )
+
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pre-checkout queries - approve or decline the payment."""
+    query = update.pre_checkout_query
+    
+    # Verify the payload
+    if query.invoice_payload.startswith("subscription_"):
+        # Payment is valid, approve it
+        await query.answer(ok=True)
+    else:
+        # Invalid payload, decline
+        await query.answer(ok=False, error_message="Invalid subscription request")
+
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle successful payments - activate the subscription."""
+    payment = update.message.successful_payment
+    user_id = update.effective_user.id
+    
+    # Parse payload to get duration (if custom durations are added later)
+    payload_parts = payment.invoice_payload.split("_")
+    days = SUBSCRIPTION_DURATION_DAYS
+    if len(payload_parts) >= 3:
+        try:
+            days = int(payload_parts[2])
+        except ValueError:
+            pass
+    
+    # Activate subscription
+    new_expiry = activate_subscription(user_id, days)
+    
+    from datetime import datetime, timezone
+    expiry_dt = datetime.fromtimestamp(new_expiry, tz=timezone.utc)
+    
+    logger.info(f"New subscription: user {user_id}, expires {expiry_dt}, paid {payment.total_amount} Stars")
+    
+    await update.message.reply_text(
+        "🎉 <b>Payment Successful!</b>\n\n"
+        f"Thank you for subscribing to Nockbot Pro!\n\n"
+        f"<b>Subscription Details:</b>\n"
+        f"• Duration: {days} days\n"
+        f"• Expires: <code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
+        f"• Stars paid: ⭐ {payment.total_amount}\n\n"
+        "<b>You will now receive alerts when:</b>\n"
+        f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+        f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+        "Use /subscription to check your status anytime.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -475,9 +905,24 @@ async def track_chat_membership(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info(f"Bot removed from group: {chat.title} ({chat.id})")
 
 
+async def send_alert(app: Application, chat_id: int, message: str) -> bool:
+    """Send an alert message to a chat. Returns True if successful."""
+    try:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send alert to {chat_id}: {e}")
+        return False
+
+
 async def check_and_alert(app: Application) -> None:
     """Periodic task to check metrics and send alerts."""
-    global last_metrics, floor_alert_triggered, ceiling_alert_triggered
+    global last_metrics, floor_alert_triggered, ceiling_alert_triggered, user_alert_state
     
     logger.info("Checking metrics...")
     metrics = await get_metrics()
@@ -487,93 +932,127 @@ async def check_and_alert(app: Application) -> None:
         return
     
     last_metrics = metrics
-    logger.info(f"Current proofrate: {metrics.proofrate} ({metrics.proofrate_value:.3f} MP/s)")
+    proofrate = metrics.proofrate_value
+    logger.info(f"Current proofrate: {metrics.proofrate} ({proofrate:.3f} MP/s)")
     
-    # Check if we need to alert - combine user subscribers, config chat IDs, and group chats
-    all_recipients = subscribed_chats.union(set(ALERT_CHAT_IDS)).union(group_chats)
+    import time
+    now = int(time.time())
     
-    if not all_recipients:
-        return
+    # Process each paid subscriber with their custom thresholds
+    for user_id, sub in paid_subscribers.items():
+        # Check if subscription is active
+        expiry = sub.get("expiry", 0) if isinstance(sub, dict) else sub
+        if expiry <= now:
+            continue
+        
+        # Get user's thresholds
+        floor, ceiling = get_user_thresholds(user_id)
+        
+        # Get or create user's alert state
+        if user_id not in user_alert_state:
+            user_alert_state[user_id] = {"floor_triggered": False, "ceiling_triggered": False}
+        
+        state = user_alert_state[user_id]
+        
+        # Check floor alert
+        if proofrate < floor and not state["floor_triggered"]:
+            state["floor_triggered"] = True
+            alert_msg = (
+                f"🔴 <b>Low Proofrate Alert!</b>\n\n"
+                f"Network proofrate has dropped below your threshold of {floor} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
+                f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
+            )
+            await send_alert(app, user_id, alert_msg)
+        
+        # Floor recovery
+        elif proofrate >= floor and state["floor_triggered"]:
+            state["floor_triggered"] = False
+            recovery_msg = (
+                f"✅ <b>Proofrate Recovered!</b>\n\n"
+                f"Network proofrate is back above your threshold of {floor} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>"
+            )
+            await send_alert(app, user_id, recovery_msg)
+        
+        # Check ceiling alert
+        if proofrate > ceiling and not state["ceiling_triggered"]:
+            state["ceiling_triggered"] = True
+            alert_msg = (
+                f"🚀 <b>High Proofrate Alert!</b>\n\n"
+                f"Network proofrate has risen above your threshold of {ceiling} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
+                f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
+            )
+            await send_alert(app, user_id, alert_msg)
+        
+        # Ceiling recovery
+        elif proofrate <= ceiling and state["ceiling_triggered"]:
+            state["ceiling_triggered"] = False
+            recovery_msg = (
+                f"📉 <b>Proofrate Normalized</b>\n\n"
+                f"Network proofrate is back below your threshold of {ceiling} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>"
+            )
+            await send_alert(app, user_id, recovery_msg)
     
-    # Alert if proofrate drops below floor
-    if metrics.proofrate_value < PROOFRATE_ALERT_FLOOR and not floor_alert_triggered:
-        floor_alert_triggered = True
-        alert_msg = (
-            f"🔴 <b>Low Proofrate Alert!</b>\n\n"
-            f"Network proofrate has dropped below {PROOFRATE_ALERT_FLOOR} MP/s\n\n"
-            f"Current: <code>{metrics.proofrate}</code>\n"
-            f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
-            f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
-        )
-        for chat_id in all_recipients:
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=alert_msg,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send floor alert to {chat_id}: {e}")
+    # Also alert group chats and ALERT_CHAT_IDS using global thresholds
+    group_recipients = set(ALERT_CHAT_IDS).union(group_chats)
     
-    # Floor recovery
-    elif metrics.proofrate_value >= PROOFRATE_ALERT_FLOOR and floor_alert_triggered:
-        floor_alert_triggered = False
-        recovery_msg = (
-            f"✅ <b>Proofrate Recovered!</b>\n\n"
-            f"Network proofrate is back above {PROOFRATE_ALERT_FLOOR} MP/s\n\n"
-            f"Current: <code>{metrics.proofrate}</code>\n"
-            f"Difficulty: <code>{metrics.difficulty}</code>"
-        )
-        for chat_id in all_recipients:
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=recovery_msg,
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send floor recovery alert to {chat_id}: {e}")
-    
-    # Alert if proofrate rises above ceiling
-    if metrics.proofrate_value > PROOFRATE_ALERT_CEILING and not ceiling_alert_triggered:
-        ceiling_alert_triggered = True
-        alert_msg = (
-            f"🚀 <b>High Proofrate Alert!</b>\n\n"
-            f"Network proofrate has risen above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
-            f"Current: <code>{metrics.proofrate}</code>\n"
-            f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
-            f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
-        )
-        for chat_id in all_recipients:
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=alert_msg,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send ceiling alert to {chat_id}: {e}")
-    
-    # Ceiling recovery
-    elif metrics.proofrate_value <= PROOFRATE_ALERT_CEILING and ceiling_alert_triggered:
-        ceiling_alert_triggered = False
-        recovery_msg = (
-            f"📉 <b>Proofrate Normalized</b>\n\n"
-            f"Network proofrate is back below {PROOFRATE_ALERT_CEILING} MP/s\n\n"
-            f"Current: <code>{metrics.proofrate}</code>\n"
-            f"Difficulty: <code>{metrics.difficulty}</code>"
-        )
-        for chat_id in all_recipients:
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=recovery_msg,
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send ceiling recovery alert to {chat_id}: {e}")
+    if group_recipients:
+        # Floor alert for groups
+        if proofrate < PROOFRATE_ALERT_FLOOR and not floor_alert_triggered:
+            floor_alert_triggered = True
+            alert_msg = (
+                f"🔴 <b>Low Proofrate Alert!</b>\n\n"
+                f"Network proofrate has dropped below {PROOFRATE_ALERT_FLOOR} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
+                f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
+            )
+            for chat_id in group_recipients:
+                await send_alert(app, chat_id, alert_msg)
+        
+        # Floor recovery for groups
+        elif proofrate >= PROOFRATE_ALERT_FLOOR and floor_alert_triggered:
+            floor_alert_triggered = False
+            recovery_msg = (
+                f"✅ <b>Proofrate Recovered!</b>\n\n"
+                f"Network proofrate is back above {PROOFRATE_ALERT_FLOOR} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>"
+            )
+            for chat_id in group_recipients:
+                await send_alert(app, chat_id, recovery_msg)
+        
+        # Ceiling alert for groups
+        if proofrate > PROOFRATE_ALERT_CEILING and not ceiling_alert_triggered:
+            ceiling_alert_triggered = True
+            alert_msg = (
+                f"🚀 <b>High Proofrate Alert!</b>\n\n"
+                f"Network proofrate has risen above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
+                f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
+            )
+            for chat_id in group_recipients:
+                await send_alert(app, chat_id, alert_msg)
+        
+        # Ceiling recovery for groups
+        elif proofrate <= PROOFRATE_ALERT_CEILING and ceiling_alert_triggered:
+            ceiling_alert_triggered = False
+            recovery_msg = (
+                f"📉 <b>Proofrate Normalized</b>\n\n"
+                f"Network proofrate is back below {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+                f"Current: <code>{metrics.proofrate}</code>\n"
+                f"Difficulty: <code>{metrics.difficulty}</code>"
+            )
+            for chat_id in group_recipients:
+                await send_alert(app, chat_id, recovery_msg)
 
 
 def main() -> None:
@@ -601,12 +1080,19 @@ def main() -> None:
     app.add_handler(CommandHandler("proofrate", hashrate))
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    app.add_handler(CommandHandler("subscription", subscription))
+    app.add_handler(CommandHandler("setalerts", setalerts))
+    app.add_handler(CommandHandler("resetalerts", resetalerts))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("tip", tip))
     app.add_handler(CommandHandler("volume", volume))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(ChatMemberHandler(track_chat_membership, ChatMemberHandler.MY_CHAT_MEMBER))
+    
+    # Payment handlers
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     
     # Set up periodic monitoring
     scheduler = AsyncIOScheduler()
@@ -631,7 +1117,10 @@ def main() -> None:
             BotCommand("proofrate", "Get current mining metrics"),
             BotCommand("tip", "Get latest block info"),
             BotCommand("volume", "Get 24h transaction volume"),
-            BotCommand("subscribe", "Subscribe to proofrate alerts"),
+            BotCommand("subscribe", "Subscribe to proofrate alerts (paid)"),
+            BotCommand("subscription", "Check your subscription status"),
+            BotCommand("setalerts", "Set custom alert thresholds"),
+            BotCommand("resetalerts", "Reset to default thresholds"),
             BotCommand("unsubscribe", "Stop receiving alerts"),
             BotCommand("status", "Check bot status"),
             BotCommand("help", "Show help message"),
@@ -652,6 +1141,7 @@ def main() -> None:
     print(f"📊 Monitoring interval: {MONITOR_INTERVAL_MINUTES} minutes")
     print(f"⚠️  Alert floor: {PROOFRATE_ALERT_FLOOR} MP/s")
     print(f"⚠️  Alert ceiling: {PROOFRATE_ALERT_CEILING} MP/s")
+    print(f"💰 Subscription: {SUBSCRIPTION_PRICE_STARS} Stars / {SUBSCRIPTION_DURATION_DAYS} days")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
