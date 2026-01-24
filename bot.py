@@ -226,10 +226,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⛏️ <b>Nockbot</b>\n\n"
         "I track the proofrate and mining metrics for the Nockchain network.\n\n"
         "<b>Free Commands:</b>\n"
-        "• /hashrate - Get current mining metrics\n"
+        "• /proofrate - Get current mining metrics\n"
         "• /tip - Get latest block info\n"
         "• /volume - Get 24h transaction volume\n\n"
-        "<b>Premium (⭐ Stars or 1000 NOCK for LIFETIME):</b>\n"
+        "<b>Premium (⭐ Stars or 1000 NOCK for LIFETIME) contact @nocktoshi for details:</b>\n"
         "• /subscribe - Get alerts when proofrate changes\n"
         "• /subscription - Check status &amp; set custom thresholds\n"
         "• /setalerts - Configure your own floor/ceiling\n\n",
@@ -244,7 +244,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "⛏️ <b>Nockbot - Help</b>\n\n"
         "<b>📊 Free Commands:</b>\n\n"
-        "<b>/hashrate</b> or <b>/proofrate</b>\n"
+        "<b>/proofrate</b>\n"
         "Get current network mining metrics including:\n"
         "• Current difficulty\n"
         "• Network proofrate (hashrate)\n"
@@ -264,7 +264,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Check bot status and subscriber count\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"<b>⭐ Premium ({SUBSCRIPTION_PRICE_STARS} Stars / {SUBSCRIPTION_DURATION_DAYS} days):</b>\n\n"
-        f"<b>ℕOCK Premium (1000 ℕOCK / LIFETIME SUBSCRIPTION):</b>\n\n"
+        f"<b>ℕOCK Premium (1000 ℕOCK / LIFETIME SUBSCRIPTION) contact @nocktoshi for details:</b>\n\n"
         "<b>/subscribe</b>\n"
         "Subscribe for automatic alerts (sent to your DMs)\n\n"
         "<b>/subscription</b>\n"
@@ -1116,20 +1116,19 @@ def main() -> None:
         scheduler.start()
         logger.info(f"Scheduler started. Checking every {MONITOR_INTERVAL_MINUTES} minutes.")
         
-        # Set bot commands via API
+        # Set bot commands via API (https://core.telegram.org/bots/api#setmycommands)
         commands = [
             BotCommand("start", "Start the bot and see options"),
-            BotCommand("hashrate", "Get current mining metrics"),
             BotCommand("proofrate", "Get current mining metrics"),
             BotCommand("tip", "Get latest block info"),
             BotCommand("volume", "Get 24h transaction volume"),
-            BotCommand("subscribe", "Subscribe to proofrate alerts (paid)"),
+            BotCommand("subscribe", "Subscribe to proofrate alerts (⭐ Stars or 1000 NOCK for LIFETIME)"),
             BotCommand("subscription", "Check your subscription status"),
-            BotCommand("setalerts", "Set custom alert thresholds"),
+            BotCommand("setalerts", "Set custom alert thresholds (subscribers)"),
             BotCommand("resetalerts", "Reset to default thresholds"),
             BotCommand("unsubscribe", "Stop receiving alerts"),
             BotCommand("status", "Check bot status"),
-            BotCommand("help", "Show help message"),
+            BotCommand("help", "Show all commands"),
         ]
         await app.bot.set_my_commands(commands)
         logger.info("Bot commands registered.")
