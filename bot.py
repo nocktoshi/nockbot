@@ -41,83 +41,92 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Persistence files
-SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
-GROUP_CHATS_FILE = Path(__file__).parent / "group_chats.json"
+# Persistence files (legacy files will be merged on startup)
+SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"  # Legacy - merged as lifetime users
+GROUP_CHATS_FILE = Path(__file__).parent / "group_chats.json"  # Legacy - merged as groups
 PAID_SUBSCRIBERS_FILE = Path(__file__).parent / "paid_subscribers.json"
 
+# Lifetime subscriber expiry value (0 = never expires)
+LIFETIME_EXPIRY = 0
 
-def load_json_set(filepath: Path, key: str) -> set[int]:
-    """Load a set of IDs from a JSON file."""
-    if filepath.exists():
-        try:
-            with open(filepath, "r") as f:
-                data = json.load(f)
-                ids = data.get(key, [])
-                if not isinstance(ids, list):
-                    logger.warning(f"Invalid {key} format in {filepath.name}, expected list")
-                    return set()
-                return set(ids)
-        except (json.JSONDecodeError, IOError, TypeError) as e:
-            logger.error(f"Failed to load {filepath.name}: {e}")
-    return set()
-
-
-def save_json_set(filepath: Path, key: str, data: set[int]) -> None:
-    """Save a set of IDs to a JSON file."""
-    try:
-        with open(filepath, "w") as f:
-            json.dump({key: list(data)}, f)
-    except IOError as e:
-        logger.error(f"Failed to save {filepath.name}: {e}")
-
-
-def load_subscribers() -> set[int]:
-    """Load subscribers from disk."""
-    return load_json_set(SUBSCRIBERS_FILE, "chat_ids")
-
-
-def save_subscribers() -> None:
-    """Save subscribers to disk."""
-    save_json_set(SUBSCRIBERS_FILE, "chat_ids", subscribed_chats)
-
-
-def load_group_chats() -> set[int]:
-    """Load group chats from disk."""
-    return load_json_set(GROUP_CHATS_FILE, "group_ids")
-
-
-def save_group_chats() -> None:
-    """Save group chats to disk."""
-    save_json_set(GROUP_CHATS_FILE, "group_ids", group_chats)
+# Subscriber types
+TYPE_USER = "user"
+TYPE_GROUP = "group"
 
 
 def load_paid_subscribers() -> dict[int, dict]:
-    """Load paid subscribers from disk. Returns dict of user_id -> subscriber data.
+    """Load all subscribers from disk, merging legacy files.
     
     Subscriber data format:
     {
-        "expiry": int (timestamp),
-        "floor": float or None (custom floor threshold),
-        "ceiling": float or None (custom ceiling threshold)
+        "type": "user" or "group",
+        "expiry": int (timestamp, 0 = lifetime/never expires),
+        "floor": float or None (custom floor threshold, users only),
+        "ceiling": float or None (custom ceiling threshold, users only)
     }
     """
+    result = {}
+    
+    # First, load legacy subscribers.json as lifetime user subscribers
+    if SUBSCRIBERS_FILE.exists():
+        try:
+            with open(SUBSCRIBERS_FILE, "r") as f:
+                data = json.load(f)
+                chat_ids = data.get("chat_ids", [])
+                if isinstance(chat_ids, list):
+                    for user_id in chat_ids:
+                        result[int(user_id)] = {
+                            "type": TYPE_USER,
+                            "expiry": LIFETIME_EXPIRY,
+                            "floor": None,
+                            "ceiling": None
+                        }
+                    logger.info(f"Loaded {len(chat_ids)} lifetime subscribers from legacy subscribers.json")
+        except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
+            logger.error(f"Failed to load legacy subscribers: {e}")
+    
+    # Load legacy group_chats.json as group subscribers
+    if GROUP_CHATS_FILE.exists():
+        try:
+            with open(GROUP_CHATS_FILE, "r") as f:
+                data = json.load(f)
+                group_ids = data.get("group_ids", [])
+                if isinstance(group_ids, list):
+                    for group_id in group_ids:
+                        result[int(group_id)] = {
+                            "type": TYPE_GROUP,
+                            "expiry": LIFETIME_EXPIRY,
+                            "floor": None,
+                            "ceiling": None
+                        }
+                    logger.info(f"Loaded {len(group_ids)} groups from legacy group_chats.json")
+        except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
+            logger.error(f"Failed to load legacy group chats: {e}")
+    
+    # Then load paid_subscribers.json (will override legacy if same id)
     if PAID_SUBSCRIBERS_FILE.exists():
         try:
             with open(PAID_SUBSCRIBERS_FILE, "r") as f:
                 data = json.load(f)
-                result = {}
                 for k, v in data.get("subscribers", {}).items():
-                    user_id = int(k)
+                    sub_id = int(k)
                     # Handle migration from old format (just expiry int) to new format (dict)
                     if isinstance(v, int):
-                        result[user_id] = {"expiry": v, "floor": None, "ceiling": None}
+                        result[sub_id] = {
+                            "type": TYPE_USER,
+                            "expiry": v,
+                            "floor": None,
+                            "ceiling": None
+                        }
                     else:
-                        result[user_id] = v
-                return result
+                        # Ensure type field exists (default to user for backwards compat)
+                        if "type" not in v:
+                            v["type"] = TYPE_USER
+                        result[sub_id] = v
         except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
             logger.error(f"Failed to load paid subscribers: {e}")
-    return {}
+    
+    return result
 
 
 def save_paid_subscribers() -> None:
@@ -130,12 +139,18 @@ def save_paid_subscribers() -> None:
 
 
 def is_subscription_active(user_id: int) -> bool:
-    """Check if a user has an active subscription."""
+    """Check if a user has an active subscription.
+    
+    expiry = 0 means lifetime subscription (never expires).
+    """
     import time
     sub = paid_subscribers.get(user_id)
     if sub is None:
         return False
     expiry = sub.get("expiry", 0) if isinstance(sub, dict) else sub
+    # Lifetime subscribers have expiry = 0
+    if expiry == LIFETIME_EXPIRY:
+        return True
     return expiry > int(time.time())
 
 
@@ -208,9 +223,23 @@ last_metrics: Optional[MiningMetrics] = None
 floor_alert_triggered = False
 ceiling_alert_triggered = False
 user_alert_state: dict[int, dict] = {}  # Per-user alert state: {user_id: {"floor_triggered": bool, "ceiling_triggered": bool}}
-subscribed_chats: set[int] = load_subscribers()  # Legacy free subscribers (kept for backwards compatibility)
-group_chats: set[int] = load_group_chats()
-paid_subscribers: dict[int, dict] = load_paid_subscribers()  # user_id -> {expiry, floor, ceiling}
+paid_subscribers: dict[int, dict] = load_paid_subscribers()  # id -> {type, expiry: 0=lifetime, floor, ceiling}
+
+
+def get_group_chats() -> set[int]:
+    """Get all group chat IDs from paid_subscribers."""
+    return {
+        sub_id for sub_id, sub in paid_subscribers.items()
+        if sub.get("type") == TYPE_GROUP
+    }
+
+
+def get_user_subscribers() -> dict[int, dict]:
+    """Get all user subscribers (not groups) from paid_subscribers."""
+    return {
+        sub_id: sub for sub_id, sub in paid_subscribers.items()
+        if sub.get("type") == TYPE_USER
+    }
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -312,22 +341,35 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     # Check if user already has active subscription
     if is_subscription_active(user_id):
-        from datetime import datetime, timezone
         expiry = get_subscription_expiry(user_id)
-        expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
-        days_left = (expiry - int(datetime.now(timezone.utc).timestamp())) // (24 * 60 * 60)
         
-        await update.message.reply_text(
-            "✅ <b>You're Already Subscribed!</b>\n\n"
-            f"Your subscription is active until:\n"
-            f"<code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
-            f"({days_left} days remaining)\n\n"
-            "You'll receive alerts when:\n"
-            f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
-            f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
-            "Use /unsubscribe to cancel your subscription.",
-            parse_mode=ParseMode.HTML,
-        )
+        if expiry == LIFETIME_EXPIRY:
+            await update.message.reply_text(
+                "✅ <b>You Have a Lifetime Subscription!</b>\n\n"
+                "Your subscription never expires.\n\n"
+                "You'll receive alerts when:\n"
+                f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+                f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+                "Use /subscription to see your alert thresholds.\n"
+                "Use /unsubscribe to cancel your subscription.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            from datetime import datetime, timezone
+            expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+            days_left = (expiry - int(datetime.now(timezone.utc).timestamp())) // (24 * 60 * 60)
+            
+            await update.message.reply_text(
+                "✅ <b>You're Already Subscribed!</b>\n\n"
+                f"Your subscription is active until:\n"
+                f"<code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
+                f"({days_left} days remaining)\n\n"
+                "You'll receive alerts when:\n"
+                f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
+                f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+                "Use /unsubscribe to cancel your subscription.",
+                parse_mode=ParseMode.HTML,
+            )
         return
     
     # Show subscription offer with payment button
@@ -346,45 +388,42 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"<b>Duration:</b> {SUBSCRIPTION_DURATION_DAYS} days\n\n"
         f"<b>Pay with NOCK:</b> Pay 1000 NOCK for LIFETIME SUBSCRIPTION! DM @nocktoshi for details\n\n"
         "<b>What you get:</b>\n"
-        f"• Alerts when proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
-        f"• Alerts when proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n"
-        f"• Checks every {MONITOR_INTERVAL_MINUTES} minutes\n"
-        "• Alerts sent directly to your DMs\n\n"
+        f"• 24/7 monitoring of the network proofrate\n"
+        f"• Custom alert thresholds (floor/ceiling) can be set\n"
+        f"• Alerts when proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s or rises above {PROOFRATE_ALERT_CEILING} MP/s\n"
+        f"• Alerts sent directly to your DMs\n\n"
         "Tap the button below to subscribe:",
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
     )
 
-
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /unsubscribe command - unsubscribes the user."""
     user_id = update.effective_user.id
     
-    was_paid = user_id in paid_subscribers
-    was_free = user_id in subscribed_chats
+    was_subscribed = user_id in paid_subscribers
+    was_lifetime = False
+    if was_subscribed:
+        was_lifetime = paid_subscribers[user_id].get("expiry") == LIFETIME_EXPIRY
     
-    # Remove from both paid and legacy free subscribers
+    # Remove from subscribers
     if user_id in paid_subscribers:
         del paid_subscribers[user_id]
         save_paid_subscribers()
-    
-    subscribed_chats.discard(user_id)
-    save_subscribers()
     
     # Clear alert state so re-subscribing starts fresh
     if user_id in user_alert_state:
         del user_alert_state[user_id]
     
-    if was_paid:
+    if was_lifetime:
         await update.message.reply_text(
-            "🔕 <b>Subscription Cancelled</b>\n\n"
-            "Your paid subscription has been cancelled.\n"
+            "🔕 <b>Lifetime Subscription Cancelled</b>\n\n"
+            "Your lifetime subscription has been cancelled.\n"
             "You will no longer receive automatic notifications.\n\n"
-            "<i>Note: Refunds are not automatic. Contact support if needed.</i>\n\n"
             "Use /subscribe to purchase a new subscription.",
             parse_mode=ParseMode.HTML,
         )
-    elif was_free:
+    elif was_subscribed:
         await update.message.reply_text(
             "🔕 <b>Unsubscribed from Alerts</b>\n\n"
             "You will no longer receive automatic notifications.\n"
@@ -403,21 +442,33 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /status command."""
     global last_metrics
     
-    # Count active paid subscribers
+    # Count active subscribers by type
     import time
     now = int(time.time())
-    active_paid = sum(
-        1 for sub in paid_subscribers.values() 
-        if (sub.get("expiry", 0) if isinstance(sub, dict) else sub) > now
-    )
+    user_lifetime = 0
+    user_timed = 0
+    group_count = 0
+    
+    for sub in paid_subscribers.values():
+        sub_type = sub.get("type", TYPE_USER)
+        expiry = sub.get("expiry", 0) if isinstance(sub, dict) else sub
+        
+        if sub_type == TYPE_GROUP:
+            group_count += 1
+        elif expiry == LIFETIME_EXPIRY:
+            user_lifetime += 1
+        elif expiry > now:
+            user_timed += 1
+    
+    total_users = user_lifetime + user_timed
     
     status_text = "📡 <b>Bot Status</b>\n\n"
     status_text += f"• Monitoring: <code>Active</code>\n"
     status_text += f"• Check Interval: <code>{MONITOR_INTERVAL_MINUTES} min</code>\n"
     status_text += f"• Default Floor: <code>{PROOFRATE_ALERT_FLOOR} MP/s</code>\n"
     status_text += f"• Default Ceiling: <code>{PROOFRATE_ALERT_CEILING} MP/s</code>\n"
-    status_text += f"• Paid Subscribers: <code>{active_paid}</code>\n"
-    status_text += f"• Group Chats: <code>{len(group_chats)}</code>\n\n"
+    status_text += f"• Subscribers: <code>{total_users}</code> ({user_lifetime} lifetime, {user_timed} timed)\n"
+    status_text += f"• Group Chats: <code>{group_count}</code>\n\n"
     
     if last_metrics:
         status_text += f"<b>Last Known Metrics:</b>\n"
@@ -437,9 +488,6 @@ async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         from datetime import datetime, timezone
         import time
         expiry = get_subscription_expiry(user_id)
-        expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
-        days_left = (expiry - int(time.time())) // (24 * 60 * 60)
-        hours_left = ((expiry - int(time.time())) % (24 * 60 * 60)) // 3600
         
         # Get user's custom thresholds
         floor, ceiling = get_user_thresholds(user_id)
@@ -450,20 +498,40 @@ async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         floor_str = f"<code>{floor} MP/s</code>" + (" (custom)" if custom_floor else " (default)")
         ceiling_str = f"<code>{ceiling} MP/s</code>" + (" (custom)" if custom_ceiling else " (default)")
         
-        await update.message.reply_text(
-            "✅ <b>Subscription Active</b>\n\n"
-            f"<b>Status:</b> Active\n"
-            f"<b>Expires:</b> <code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
-            f"<b>Time left:</b> {days_left} days, {hours_left} hours\n\n"
-            "<b>Alert Thresholds:</b>\n"
-            f"• Floor: {floor_str}\n"
-            f"• Ceiling: {ceiling_str}\n\n"
-            "<b>Commands:</b>\n"
-            "• /setalerts &lt;floor&gt; &lt;ceiling&gt; - Set custom thresholds\n"
-            "• /resetalerts - Reset to defaults\n"
-            "• /unsubscribe - Cancel subscription",
-            parse_mode=ParseMode.HTML,
-        )
+        # Check if lifetime subscription
+        if expiry == LIFETIME_EXPIRY:
+            await update.message.reply_text(
+                "✅ <b>Lifetime Subscription Active</b>\n\n"
+                f"<b>Status:</b> Active (Lifetime)\n"
+                f"<b>Expires:</b> <code>Never</code>\n\n"
+                "<b>Alert Thresholds:</b>\n"
+                f"• Floor: {floor_str}\n"
+                f"• Ceiling: {ceiling_str}\n\n"
+                "<b>Commands:</b>\n"
+                "• /setalerts &lt;floor&gt; &lt;ceiling&gt; - Set custom thresholds\n"
+                "• /resetalerts - Reset to defaults\n"
+                "• /unsubscribe - Cancel subscription",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+            days_left = (expiry - int(time.time())) // (24 * 60 * 60)
+            hours_left = ((expiry - int(time.time())) % (24 * 60 * 60)) // 3600
+            
+            await update.message.reply_text(
+                "✅ <b>Subscription Active</b>\n\n"
+                f"<b>Status:</b> Active\n"
+                f"<b>Expires:</b> <code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
+                f"<b>Time left:</b> {days_left} days, {hours_left} hours\n\n"
+                "<b>Alert Thresholds:</b>\n"
+                f"• Floor: {floor_str}\n"
+                f"• Ceiling: {ceiling_str}\n\n"
+                "<b>Commands:</b>\n"
+                "• /setalerts &lt;floor&gt; &lt;ceiling&gt; - Set custom thresholds\n"
+                "• /resetalerts - Reset to defaults\n"
+                "• /unsubscribe - Cancel subscription",
+                parse_mode=ParseMode.HTML,
+            )
     else:
         # Check if they have an expired subscription
         expiry = get_subscription_expiry(user_id)
@@ -719,15 +787,21 @@ async def send_subscription_invoice(update: Update, context: ContextTypes.DEFAUL
     
     # Check if already subscribed
     if is_subscription_active(user_id):
-        from datetime import datetime, timezone
         expiry = get_subscription_expiry(user_id)
-        expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
         
         if update.callback_query:
-            await update.callback_query.message.reply_text(
-                f"✅ You already have an active subscription until {expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}",
-                parse_mode=ParseMode.HTML,
-            )
+            if expiry == LIFETIME_EXPIRY:
+                await update.callback_query.message.reply_text(
+                    "✅ You already have a lifetime subscription!",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                from datetime import datetime, timezone
+                expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
+                await update.callback_query.message.reply_text(
+                    f"✅ You already have an active subscription until {expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}",
+                    parse_mode=ParseMode.HTML,
+                )
         return
     
     # Create invoice
@@ -899,15 +973,20 @@ async def track_chat_membership(update: Update, context: ContextTypes.DEFAULT_TY
     
     if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR]:
         # Bot was added to group
-        if chat.id not in group_chats:
-            group_chats.add(chat.id)
-            save_group_chats()
+        if chat.id not in paid_subscribers or paid_subscribers[chat.id].get("type") != TYPE_GROUP:
+            paid_subscribers[chat.id] = {
+                "type": TYPE_GROUP,
+                "expiry": LIFETIME_EXPIRY,
+                "floor": None,
+                "ceiling": None
+            }
+            save_paid_subscribers()
             logger.info(f"Bot added to group: {chat.title} ({chat.id})")
     elif new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
         # Bot was removed from group
-        if chat.id in group_chats:
-            group_chats.discard(chat.id)
-            save_group_chats()
+        if chat.id in paid_subscribers and paid_subscribers[chat.id].get("type") == TYPE_GROUP:
+            del paid_subscribers[chat.id]
+            save_paid_subscribers()
             logger.info(f"Bot removed from group: {chat.title} ({chat.id})")
 
 
@@ -944,11 +1023,15 @@ async def check_and_alert(app: Application) -> None:
     import time
     now = int(time.time())
     
-    # Process each paid subscriber with their custom thresholds
+    # Process each user subscriber (not groups) with their custom thresholds
     for user_id, sub in paid_subscribers.items():
-        # Check if subscription is active
+        # Skip groups - they use global thresholds and are handled separately
+        if sub.get("type") == TYPE_GROUP:
+            continue
+        
+        # Check if subscription is active (expiry=0 means lifetime)
         expiry = sub.get("expiry", 0) if isinstance(sub, dict) else sub
-        if expiry <= now:
+        if expiry != LIFETIME_EXPIRY and expiry <= now:
             continue
         
         # Get user's thresholds
@@ -1006,8 +1089,8 @@ async def check_and_alert(app: Application) -> None:
             )
             await send_alert(app, user_id, recovery_msg)
     
-    # Also alert group chats, ALERT_CHAT_IDS, and legacy free subscribers using global thresholds
-    group_recipients = set(ALERT_CHAT_IDS).union(group_chats).union(subscribed_chats)
+    # Also alert group chats and ALERT_CHAT_IDS using global thresholds
+    group_recipients = set(ALERT_CHAT_IDS).union(get_group_chats())
     
     if group_recipients:
         # Floor alert for groups
