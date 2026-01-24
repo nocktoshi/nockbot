@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nockchain Hashrate Monitor - Telegram Bot."""
+"""Nockbot - Telegram Bot."""
 import asyncio
 import json
 import logging
@@ -370,6 +370,10 @@ async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     subscribed_chats.discard(user_id)
     save_subscribers()
+    
+    # Clear alert state so re-subscribing starts fresh
+    if user_id in user_alert_state:
+        del user_alert_state[user_id]
     
     if was_paid:
         await update.message.reply_text(
@@ -1000,8 +1004,8 @@ async def check_and_alert(app: Application) -> None:
             )
             await send_alert(app, user_id, recovery_msg)
     
-    # Also alert group chats and ALERT_CHAT_IDS using global thresholds
-    group_recipients = set(ALERT_CHAT_IDS).union(group_chats)
+    # Also alert group chats, ALERT_CHAT_IDS, and legacy free subscribers using global thresholds
+    group_recipients = set(ALERT_CHAT_IDS).union(group_chats).union(subscribed_chats)
     
     if group_recipients:
         # Floor alert for groups
