@@ -21,6 +21,8 @@ A Telegram bot that monitors the hashrate (proofrate) of the Nockchain network u
 
 ```bash
 cd nockbot
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -41,6 +43,7 @@ Required settings in `.env`:
 ### 4. Run the Bot
 
 ```bash
+source venv/bin/activate
 python bot.py
 ```
 
@@ -78,29 +81,53 @@ Configure the threshold in your `.env` file using `PROOFRATE_ALERT_THRESHOLD`.
 
 ### Using systemd (Linux)
 
-Create `/etc/systemd/system/nockbot.service`:
+1. Set up the virtual environment on your server:
+
+```bash
+cd /home/ubuntu/nockbot
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Copy the included service file to systemd:
+
+```bash
+sudo cp nockbot.service /etc/systemd/system/
+```
+
+Or create `/etc/systemd/system/nockbot.service` manually:
 
 ```ini
 [Unit]
-Description=nockbot Telegram Bot
+Description=Nockbot Telegram Bot
 After=network.target
 
 [Service]
 Type=simple
-User=your_user
-WorkingDirectory=/path/to/hashbot
-ExecStart=/usr/bin/python3 bot.py
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nockbot
+ExecStart=/home/ubuntu/nockbot/venv/bin/python /home/ubuntu/nockbot/bot.py
 Restart=always
 RestartSec=10
+EnvironmentFile=/home/ubuntu/nockbot/.env
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Then:
+3. Enable and start the service:
+
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl enable nockbot
 sudo systemctl start nockbot
+```
+
+4. Check status:
+
+```bash
+sudo systemctl status nockbot
 ```
 
 ### Using Docker

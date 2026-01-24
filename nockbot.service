@@ -1,0 +1,15 @@
+[Unit]
+Description=Nockbot Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nockbot
+ExecStart=/home/ubuntu/nockbot/venv/bin/python /home/ubuntu/nockbot/bot.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/ubuntu/nockbot/.env
+
+[Install]
+WantedBy=multi-user.target
