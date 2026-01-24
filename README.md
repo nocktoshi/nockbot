@@ -126,6 +126,3 @@ docker run -d --env-file .env nockbot
 
 All metrics are sourced from [NockBlocks](https://nockblocks.com/metrics?tab=mining) by SWPSCo.
 
-## License
-
-MIT
