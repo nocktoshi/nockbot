@@ -54,8 +54,10 @@ TYPE_USER = "user"
 TYPE_GROUP = "group"
 
 
-def load_paid_subscribers() -> dict[int, dict]:
+def load_paid_subscribers() -> tuple[dict[int, dict], bool]:
     """Load all subscribers from disk, merging legacy files.
+    
+    Returns (subscribers_dict, migrated) where migrated is True if legacy data was loaded.
     
     Subscriber data format:
     {
@@ -66,6 +68,7 @@ def load_paid_subscribers() -> dict[int, dict]:
     }
     """
     result = {}
+    migrated = False
     
     # First, load legacy subscribers.json as lifetime user subscribers
     if SUBSCRIBERS_FILE.exists():
@@ -73,7 +76,7 @@ def load_paid_subscribers() -> dict[int, dict]:
             with open(SUBSCRIBERS_FILE, "r") as f:
                 data = json.load(f)
                 chat_ids = data.get("chat_ids", [])
-                if isinstance(chat_ids, list):
+                if isinstance(chat_ids, list) and chat_ids:
                     for user_id in chat_ids:
                         result[int(user_id)] = {
                             "type": TYPE_USER,
@@ -81,7 +84,8 @@ def load_paid_subscribers() -> dict[int, dict]:
                             "floor": None,
                             "ceiling": None
                         }
-                    logger.info(f"Loaded {len(chat_ids)} lifetime subscribers from legacy subscribers.json")
+                    logger.info(f"Migrated {len(chat_ids)} lifetime subscribers from legacy subscribers.json")
+                    migrated = True
         except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
             logger.error(f"Failed to load legacy subscribers: {e}")
     
@@ -91,7 +95,7 @@ def load_paid_subscribers() -> dict[int, dict]:
             with open(GROUP_CHATS_FILE, "r") as f:
                 data = json.load(f)
                 group_ids = data.get("group_ids", [])
-                if isinstance(group_ids, list):
+                if isinstance(group_ids, list) and group_ids:
                     for group_id in group_ids:
                         result[int(group_id)] = {
                             "type": TYPE_GROUP,
@@ -99,7 +103,8 @@ def load_paid_subscribers() -> dict[int, dict]:
                             "floor": None,
                             "ceiling": None
                         }
-                    logger.info(f"Loaded {len(group_ids)} groups from legacy group_chats.json")
+                    logger.info(f"Migrated {len(group_ids)} groups from legacy group_chats.json")
+                    migrated = True
         except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
             logger.error(f"Failed to load legacy group chats: {e}")
     
@@ -126,7 +131,7 @@ def load_paid_subscribers() -> dict[int, dict]:
         except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
             logger.error(f"Failed to load paid subscribers: {e}")
     
-    return result
+    return result, migrated
 
 
 def save_paid_subscribers() -> None:
@@ -223,7 +228,12 @@ last_metrics: Optional[MiningMetrics] = None
 floor_alert_triggered = False
 ceiling_alert_triggered = False
 user_alert_state: dict[int, dict] = {}  # Per-user alert state: {user_id: {"floor_triggered": bool, "ceiling_triggered": bool}}
-paid_subscribers: dict[int, dict] = load_paid_subscribers()  # id -> {type, expiry: 0=lifetime, floor, ceiling}
+# Load subscribers and migrate legacy files if needed
+paid_subscribers, _migrated = load_paid_subscribers()
+if _migrated:
+    # Save to persist the migration
+    save_paid_subscribers()
+    logger.info("Migration complete - legacy data saved to paid_subscribers.json")
 
 
 def get_group_chats() -> set[int]:
