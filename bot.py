@@ -7,7 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, InlineQueryResultArticle, InputTextMessageContent, BotCommand, LabeledPrice
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated, 
+    InlineQueryResultArticle, InputTextMessageContent, BotCommand, LabeledPrice,
+    BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1138,21 +1142,35 @@ def main() -> None:
         logger.info(f"Scheduler started. Checking every {MONITOR_INTERVAL_MINUTES} minutes.")
         
         # Set bot commands via API (https://core.telegram.org/bots/api#setmycommands)
-        commands = [
+        # Commands for private chats (full feature set)
+        private_commands = [
             BotCommand("start", "Start the bot and see options"),
             BotCommand("proofrate", "Get current mining metrics"),
             BotCommand("tip", "Get latest block info"),
             BotCommand("volume", "Get 24h transaction volume"),
-            BotCommand("subscribe", "Subscribe to proofrate alerts (⭐ Stars or 1000 NOCK for LIFETIME)"),
+            BotCommand("subscribe", "Subscribe to proofrate alerts"),
             BotCommand("subscription", "Check your subscription status"),
-            BotCommand("setalerts", "Set custom alert thresholds (subscribers)"),
+            BotCommand("setalerts", "Set custom alert thresholds"),
             BotCommand("resetalerts", "Reset to default thresholds"),
             BotCommand("unsubscribe", "Stop receiving alerts"),
             BotCommand("status", "Check bot status"),
             BotCommand("help", "Show all commands"),
         ]
-        await app.bot.set_my_commands(commands)
-        logger.info("Bot commands registered.")
+        
+        # Commands for group chats (info only, no subscription management)
+        group_commands = [
+            BotCommand("proofrate", "Get current mining metrics"),
+            BotCommand("tip", "Get latest block info"),
+            BotCommand("volume", "Get 24h transaction volume"),
+            BotCommand("status", "Check bot status"),
+            BotCommand("help", "Show all commands"),
+        ]
+        
+        # Register commands for all scopes
+        await app.bot.set_my_commands(private_commands, scope=BotCommandScopeDefault())
+        await app.bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())
+        await app.bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
+        logger.info("Bot commands registered for all scopes.")
     
     async def on_shutdown(app: Application) -> None:
         """Stop the scheduler when the bot stops."""
