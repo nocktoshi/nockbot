@@ -185,6 +185,27 @@ def get_user_subscribers() -> dict[int, dict]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
+    chat_type = update.effective_chat.type
+    
+    # If in a group, redirect to private chat
+    if chat_type in ["group", "supergroup"]:
+        bot_username = (await context.bot.get_me()).username
+        keyboard = [
+            [InlineKeyboardButton("💬 Start Private Chat", url=f"https://t.me/{bot_username}?start=welcome")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "👋 <b>Hi! I'm Nockbot.</b>\n\n"
+            "Tap the button below to start a private conversation where you can:\n"
+            "• Subscribe to alerts\n"
+            "• Set custom thresholds\n\n"
+            "You can still use /proofrate, /tip, and /volume here to get the latest metrics!",
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+        return
+    
+    # Private chat - show full menu
     keyboard = [
         [InlineKeyboardButton("📊 Get Proofrate", callback_data="proofrate")],
         [
@@ -287,6 +308,24 @@ async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /subscribe command - send payment invoice or show status if already subscribed."""
+    chat_type = update.effective_chat.type
+    
+    # If in a group, redirect to private chat
+    if chat_type in ["group", "supergroup"]:
+        bot_username = (await context.bot.get_me()).username
+        keyboard = [
+            [InlineKeyboardButton("⭐ Set Alerts in Private Chat", url=f"https://t.me/{bot_username}?start=subscribe")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "🔔 <b>Set Alerts</b>\n\n"
+            "Alerts must be managed in private chat.\n"
+            "Tap the button below to configure alerts!",
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+        return
+    
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
@@ -1159,6 +1198,7 @@ def main() -> None:
         
         # Commands for group chats (info only, no subscription management)
         group_commands = [
+            BotCommand("start", "Start private chat with bot"),
             BotCommand("proofrate", "Get current mining metrics"),
             BotCommand("tip", "Get latest block info"),
             BotCommand("volume", "Get 24h transaction volume"),
