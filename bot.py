@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Nockchain Hashrate Monitor - Telegram Bot."""
 import asyncio
+import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,10 +32,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Subscriber persistence
+SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
+
+
+def load_subscribers() -> set[int]:
+    """Load subscribers from disk."""
+    if SUBSCRIBERS_FILE.exists():
+        try:
+            with open(SUBSCRIBERS_FILE, "r") as f:
+                data = json.load(f)
+                return set(data.get("chat_ids", []))
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Failed to load subscribers: {e}")
+    return set()
+
+
+def save_subscribers() -> None:
+    """Save subscribers to disk."""
+    try:
+        with open(SUBSCRIBERS_FILE, "w") as f:
+            json.dump({"chat_ids": list(subscribed_chats)}, f)
+    except IOError as e:
+        logger.error(f"Failed to save subscribers: {e}")
+
+
 # Global state
 last_metrics: Optional[MiningMetrics] = None
 alert_triggered = False
-subscribed_chats: set[int] = set()
+subscribed_chats: set[int] = load_subscribers()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,6 +142,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /subscribe command."""
     chat_id = update.effective_chat.id
     subscribed_chats.add(chat_id)
+    save_subscribers()
     
     await update.message.reply_text(
         "🔔 <b>Subscribed to Alerts!</b>\n\n"
@@ -131,6 +159,7 @@ async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Handle /unsubscribe command."""
     chat_id = update.effective_chat.id
     subscribed_chats.discard(chat_id)
+    save_subscribers()
     
     await update.message.reply_text(
         "🔕 <b>Unsubscribed from Alerts</b>\n\n"
@@ -184,6 +213,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     elif query.data == "subscribe":
         subscribed_chats.add(update.effective_chat.id)
+        save_subscribers()
         await query.message.reply_text(
             f"🔔 Subscribed! You'll get alerts when proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s.",
             parse_mode=ParseMode.HTML,

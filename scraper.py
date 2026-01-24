@@ -114,61 +114,39 @@ class NockBlocksAPI:
         """Get blocks by their heights."""
         return await self._rpc_call("getBlocksByHeight", [{"heights": heights}])
     
-    async def find_latest_block_height(self) -> Optional[int]:
-        """Find the latest block height using binary search."""
-        low = 51000
-        high = 60000
-        
-        # Check if high guess is valid
-        result = await self.get_blocks_by_height([high])
-        if result and len(result) > 0 and result[0]:
-            while True:
-                high += 5000
-                result = await self.get_blocks_by_height([high])
-                if not result or len(result) == 0 or not result[0]:
-                    break
-        
-        # Binary search
-        while low < high:
-            mid = (low + high + 1) // 2
-            result = await self.get_blocks_by_height([mid])
-            if result and len(result) > 0 and result[0]:
-                low = mid
-            else:
-                high = mid - 1
-        
-        return low if low > 0 else None
+    async def get_tip(self) -> Optional[dict]:
+        """Get the latest block (tip of the chain)."""
+        return await self._rpc_call("getTip", [])
     
     async def fetch_metrics(self) -> Optional[MiningMetrics]:
         """Fetch mining metrics by analyzing recent blocks."""
         try:
-            # Find latest block height
-            latest_height = await self.find_latest_block_height()
-            if not latest_height:
-                print("Could not determine latest block height")
+            # Get latest block using getTip
+            latest_block = await self.get_tip()
+            if not latest_block:
+                print("Could not get chain tip")
                 return None
             
-            # Get blocks for calculation (first, and last 100)
-            block_count = 100
-            first_height = max(1, latest_height - block_count)
+            latest_height = latest_block.get("height", 0)
+            if latest_height == 0:
+                print("Invalid latest block height")
+                return None
             
-            # Fetch key blocks
-            heights_to_fetch = [first_height, latest_height]
-            blocks_data = await self.get_blocks_by_height(heights_to_fetch)
+            # Fetch block from 100 blocks ago for comparison
+            first_height = max(1, latest_height - 100)
+            blocks_data = await self.get_blocks_by_height([first_height])
             
-            if not blocks_data or len(blocks_data) < 2:
-                print("Could not fetch blocks for metrics")
+            if not blocks_data or len(blocks_data) < 1 or not blocks_data[0]:
+                print("Could not fetch comparison block")
                 return None
             
             first_block = blocks_data[0]
-            latest_block = blocks_data[1]
             
-            if not first_block or not latest_block:
-                print("Invalid block data")
-                return None
+            # Number of block intervals between first and latest
+            num_intervals = latest_height - first_height
             
             # Calculate metrics
-            return self._calculate_metrics(first_block, latest_block, latest_height, block_count)
+            return self._calculate_metrics(first_block, latest_block, latest_height, num_intervals)
             
         except Exception as e:
             print(f"Error fetching metrics: {e}")
@@ -181,7 +159,7 @@ class NockBlocksAPI:
         first_block: dict, 
         latest_block: dict, 
         latest_height: int,
-        block_count: int
+        num_intervals: int
     ) -> MiningMetrics:
         """Calculate mining metrics from block data."""
         
@@ -195,9 +173,9 @@ class NockBlocksAPI:
         time_diff = latest_ts - first_ts  # seconds
         work_diff = latest_work - first_work
         
-        # Calculate average block time
-        if time_diff > 0 and block_count > 0:
-            avg_block_time_seconds = time_diff / block_count
+        # Calculate average block time (time_diff / number of block intervals)
+        if time_diff > 0 and num_intervals > 0:
+            avg_block_time_seconds = time_diff / num_intervals
         else:
             avg_block_time_seconds = 0
         
@@ -211,8 +189,8 @@ class NockBlocksAPI:
         
         # Calculate difficulty from work per block
         # Difficulty = average work per block
-        if block_count > 0 and work_diff > 0:
-            work_per_block = work_diff / block_count
+        if num_intervals > 0 and work_diff > 0:
+            work_per_block = work_diff / num_intervals
             difficulty_exp = math.log2(work_per_block) if work_per_block > 0 else 0
             difficulty_str = f"2^{difficulty_exp:.1f}"
         else:
