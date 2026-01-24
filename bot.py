@@ -42,8 +42,12 @@ def load_subscribers() -> set[int]:
         try:
             with open(SUBSCRIBERS_FILE, "r") as f:
                 data = json.load(f)
-                return set(data.get("chat_ids", []))
-        except (json.JSONDecodeError, IOError) as e:
+                chat_ids = data.get("chat_ids", [])
+                if not isinstance(chat_ids, list):
+                    logger.warning("Invalid chat_ids format in subscribers.json, expected list")
+                    return set()
+                return set(chat_ids)
+        except (json.JSONDecodeError, IOError, TypeError) as e:
             logger.error(f"Failed to load subscribers: {e}")
     return set()
 
