@@ -232,7 +232,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Premium (⭐ Stars or 1000 NOCK for LIFETIME):</b>\n"
         "• /subscribe - Get alerts when proofrate changes\n"
         "• /subscription - Check status &amp; set custom thresholds\n"
-        "• /setalerts - Configure your own floor/ceiling\n\n"
+        "• /setalerts - Configure your own floor/ceiling\n\n",
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
         disable_web_page_preview=True,
@@ -274,7 +274,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>/resetalerts</b>\n"
         "Reset thresholds to defaults\n\n"
         "<b>/unsubscribe</b>\n"
-        "Cancel your subscription\n\n"
+        "Cancel your subscription\n\n",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
