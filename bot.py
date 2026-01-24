@@ -273,8 +273,9 @@ async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /subscribe command - show subscription options or status."""
+    """Handle /subscribe command - send payment invoice or show status if already subscribed."""
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     
     # Check if user already has active subscription
     if is_subscription_active(user_id):
@@ -309,29 +310,22 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         return
     
-    # Show subscription offer with payment button
-    keyboard = [
-        [InlineKeyboardButton(
-            f"⭐ Pay {SUBSCRIPTION_PRICE_STARS} Stars ({SUBSCRIPTION_DURATION_DAYS} days)", 
-            callback_data="buy_subscription"
-        )],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "🔔 <b>Subscribe to Alerts</b>\n\n"
-        f"Get automatic notifications when the network proofrate changes.\n\n"
-        f"<b>Price:</b> ⭐ {SUBSCRIPTION_PRICE_STARS} Telegram Stars\n"
-        f"<b>Duration:</b> {SUBSCRIPTION_DURATION_DAYS} days\n\n"
-        f"<b>Pay with NOCK:</b> Pay 1000 NOCK for LIFETIME SUBSCRIPTION! DM @nocktoshi for details\n\n"
-        "<b>What you get:</b>\n"
-        f"• 24/7 monitoring of the network proofrate\n"
-        f"• Custom alert thresholds (floor/ceiling) can be set\n"
-        f"• Alerts when proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s or rises above {PROOFRATE_ALERT_CEILING} MP/s\n"
-        f"• Alerts sent directly to your DMs\n\n"
-        "Tap the button below to subscribe:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=reply_markup,
+    # Send invoice directly
+    await context.bot.send_invoice(
+        chat_id=chat_id,
+        title="Nockbot Pro Subscription",
+        description=(
+            f"📊 {SUBSCRIPTION_DURATION_DAYS}-day subscription\n\n"
+            f"✓ 24/7 proofrate monitoring\n"
+            f"✓ Custom alert thresholds\n"
+            f"✓ Alerts below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s\n"
+            f"✓ Direct DM notifications\n\n"
+            f"💎 Want LIFETIME? Pay 1000 NOCK - DM @nocktoshi"
+        ),
+        payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
+        provider_token="",  # Empty for Telegram Stars
+        currency="XTR",  # Telegram Stars
+        prices=[LabeledPrice(f"{SUBSCRIPTION_DURATION_DAYS}-day alerts", SUBSCRIPTION_PRICE_STARS)],
     )
 
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -706,52 +700,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode=ParseMode.HTML,
             )
     
-    elif query.data == "subscribe" or query.data == "buy_subscription":
-        # Send payment invoice
-        await send_subscription_invoice(update, context)
-    
-    elif query.data == "help":
-        await query.message.reply_text(
-            "Use /help to see all available commands.",
-            parse_mode=ParseMode.HTML,
-        )
-
-
-async def send_subscription_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a Telegram Stars invoice for subscription."""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    # Check if already subscribed
-    if is_subscription_active(user_id):
-        expiry = get_subscription_expiry(user_id)
+    elif query.data == "subscribe":
+        # Send payment invoice directly
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         
-        if update.callback_query:
+        if is_subscription_active(user_id):
+            expiry = get_subscription_expiry(user_id)
             if expiry == LIFETIME_EXPIRY:
-                await update.callback_query.message.reply_text(
+                await query.message.reply_text(
                     "✅ You already have a lifetime subscription!",
                     parse_mode=ParseMode.HTML,
                 )
             else:
                 from datetime import datetime, timezone
                 expiry_dt = datetime.fromtimestamp(expiry, tz=timezone.utc)
-                await update.callback_query.message.reply_text(
+                await query.message.reply_text(
                     f"✅ You already have an active subscription until {expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}",
                     parse_mode=ParseMode.HTML,
                 )
-        return
+        else:
+            await context.bot.send_invoice(
+                chat_id=chat_id,
+                title="Nockbot Pro Subscription",
+                description=(
+                    f"📊 {SUBSCRIPTION_DURATION_DAYS}-day subscription\n\n"
+                    f"✓ 24/7 proofrate monitoring\n"
+                    f"✓ Custom alert thresholds\n"
+                    f"✓ Alerts below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s\n"
+                    f"✓ Direct DM notifications\n\n"
+                    f"💎 Want LIFETIME? Pay 1000 NOCK - DM @nocktoshi"
+                ),
+                payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
+                provider_token="",  # Empty for Telegram Stars
+                currency="XTR",  # Telegram Stars
+                prices=[LabeledPrice(f"{SUBSCRIPTION_DURATION_DAYS}-day alerts", SUBSCRIPTION_PRICE_STARS)],
+            )
     
-    # Create invoice for Telegram Stars payment
-    await context.bot.send_invoice(
-        chat_id=chat_id,
-        title="Nockbot Pro Subscription",
-        description=f"Get proofrate alerts for {SUBSCRIPTION_DURATION_DAYS} days. "
-                    f"Alerts when proofrate goes below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s.",
-        payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
-        provider_token="",  # Empty for Telegram Stars
-        currency="XTR",  # Telegram Stars
-        prices=[LabeledPrice(f"{SUBSCRIPTION_DURATION_DAYS}-day alerts", SUBSCRIPTION_PRICE_STARS)],
-    )
+    elif query.data == "help":
+        await query.message.reply_text(
+            "Use /help to see all available commands.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
