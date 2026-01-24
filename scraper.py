@@ -154,6 +154,9 @@ class NockBlocksAPI:
                 tx_count += 1
                 for output in tx.get('outputs', []):
                     for seed in output.get('seeds', []):
+                        # Skip coinbase outputs
+                        if seed.get('isCoinbase', False):
+                            continue
                         total_volume += seed.get('gift', 0)
         
         # Convert nicks to NOCK (1 NOCK = 2^16 = 65,536 nicks)
