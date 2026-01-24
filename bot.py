@@ -182,8 +182,11 @@ def get_user_subscribers() -> dict[int, dict]:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     keyboard = [
-        [InlineKeyboardButton("📊 Get Hashrate", callback_data="hashrate")],
-        [InlineKeyboardButton(f"🔔 Subscribe (⭐{SUBSCRIPTION_PRICE_STARS} or 1000 NOCK for LIFETIME SUBSCRIPTION) contact @nocktoshi for details", callback_data="subscribe")],
+        [InlineKeyboardButton("📊 Get Proofrate", callback_data="proofrate")],
+        [
+            InlineKeyboardButton(f"⭐ Subscribe ({SUBSCRIPTION_PRICE_STARS} Stars)", callback_data="subscribe"),
+            InlineKeyboardButton("💎 Lifetime (1000 NOCK)", url="https://t.me/nocktoshi"),
+        ],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -191,14 +194,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "⛏️ <b>Nockbot</b>\n\n"
         "I track the proofrate and mining metrics for the Nockchain network.\n\n"
-        "<b>Free Commands:</b>\n"
+        "<b>📊 Free Commands:</b>\n"
         "• /proofrate - Get current mining metrics\n"
         "• /tip - Get latest block info\n"
         "• /volume - Get 24h transaction volume\n\n"
-        "<b>Premium (⭐ Stars or 1000 NOCK for LIFETIME SUBSCRIPTION) contact @nocktoshi for details:</b>\n"
+        "<b>⭐ Premium Alerts:</b>\n"
         "• /subscribe - Get alerts when proofrate changes\n"
-        "• /subscription - Check status &amp; set custom thresholds\n"
-        "• /setalerts - Configure your own floor/ceiling\n\n",
+        "• /subscription - Check status &amp; set thresholds\n"
+        "• /setalerts - Configure floor/ceiling\n\n"
+        "<b>💰 Pricing:</b>\n"
+        f"• ⭐ {SUBSCRIPTION_PRICE_STARS} Stars = {SUBSCRIPTION_DURATION_DAYS} days\n"
+        "• 💎 1000 NOCK = LIFETIME (DM @nocktoshi)\n",
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
         disable_web_page_preview=True,
