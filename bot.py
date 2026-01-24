@@ -741,13 +741,14 @@ async def send_subscription_invoice(update: Update, context: ContextTypes.DEFAUL
                 )
         return
     
-    # Create invoice
+    # Create invoice for Telegram Stars payment
     await context.bot.send_invoice(
         chat_id=chat_id,
         title="Nockbot Pro Subscription",
         description=f"Get proofrate alerts for {SUBSCRIPTION_DURATION_DAYS} days. "
                     f"Alerts when proofrate goes below {PROOFRATE_ALERT_FLOOR} MP/s or above {PROOFRATE_ALERT_CEILING} MP/s.",
         payload=f"subscription_{user_id}_{SUBSCRIPTION_DURATION_DAYS}",
+        provider_token="",  # Empty for Telegram Stars
         currency="XTR",  # Telegram Stars
         prices=[LabeledPrice(f"{SUBSCRIPTION_DURATION_DAYS}-day alerts", SUBSCRIPTION_PRICE_STARS)],
     )
