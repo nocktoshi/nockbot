@@ -233,7 +233,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /subscribe - Get alerts when proofrate changes\n"
         "• /subscription - Check status &amp; set custom thresholds\n"
         "• /setalerts - Configure your own floor/ceiling\n\n"
-        "Data sourced from <a href='https://nockblocks.com'>NockBlocks</a>",
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
         disable_web_page_preview=True,
@@ -265,6 +264,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Check bot status and subscriber count\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"<b>⭐ Premium ({SUBSCRIPTION_PRICE_STARS} Stars / {SUBSCRIPTION_DURATION_DAYS} days):</b>\n\n"
+        f"<b>ℕOCK Premium (1000 ℕOCK / LIFETIME SUBSCRIPTION):</b>\n\n"
         "<b>/subscribe</b>\n"
         "Subscribe for automatic alerts (sent to your DMs)\n\n"
         "<b>/subscription</b>\n"
@@ -275,7 +275,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Reset thresholds to defaults\n\n"
         "<b>/unsubscribe</b>\n"
         "Cancel your subscription\n\n"
-        "🔗 Data sourced from <a href='https://nockblocks.com/metrics?tab=mining'>NockBlocks</a>",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
