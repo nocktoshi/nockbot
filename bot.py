@@ -289,9 +289,10 @@ async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     if metrics:
         global last_metrics
+        previous_proofrate = last_metrics.proofrate_value if last_metrics else None
         last_metrics = metrics
         await update.message.reply_text(
-            metrics.format_message(),
+            metrics.format_message(previous_proofrate),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
@@ -687,9 +688,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         metrics = await get_metrics()
         if metrics:
             global last_metrics
+            previous_proofrate = last_metrics.proofrate_value if last_metrics else None
             last_metrics = metrics
             await query.message.reply_text(
-                metrics.format_message(),
+                metrics.format_message(previous_proofrate),
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
@@ -799,13 +801,14 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not query or query in "hashrate" or query in "proofrate" or query in "metrics":
         metrics = await get_metrics()
         if metrics:
+            previous_proofrate = last_metrics.proofrate_value if last_metrics else None
             results.append(
                 InlineQueryResultArticle(
                     id=str(uuid4()),
                     title="📊 Mining Metrics",
                     description=f"Proofrate: {metrics.proofrate} | Difficulty: {metrics.difficulty}",
                     input_message_content=InputTextMessageContent(
-                        metrics.format_message(),
+                        metrics.format_message(previous_proofrate),
                         parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True,
                     ),

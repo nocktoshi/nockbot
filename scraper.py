@@ -24,23 +24,33 @@ class MiningMetrics:
     next_adj_ratio: str
     latest_block: str
     
-    def format_message(self) -> str:
-        """Format metrics as a readable Telegram message."""
-        # Determine trend emoji based on proofrate
-        if self.proofrate_value >= 2.0:
-            trend = "🚀"
-        elif self.proofrate_value >= 1.5:
-            trend = "✅"
-        elif self.proofrate_value >= 1.0:
-            trend = "⚠️"
+    def format_message(self, previous_proofrate: Optional[float] = None) -> str:
+        """Format metrics as a readable Telegram message.
+        
+        Args:
+            previous_proofrate: Previous proofrate value to compare against for trend.
+        """
+        # Determine trend emoji based on change from previous
+        if previous_proofrate is None:
+            trend = ""  # No previous data to compare
         else:
-            trend = "🔴"
+            change = self.proofrate_value - previous_proofrate
+            pct_change = (change / previous_proofrate * 100) if previous_proofrate > 0 else 0
             
-        return f"""⛏️ <b>Nockchain Mining Metrics</b> {trend}
+            if pct_change > 5:
+                trend = "⬆️⬆️⬆️🚀"  # Up significantly
+            elif pct_change > 0:
+                trend = "⬆️↗"   # Up slightly
+            elif pct_change > -5:
+                trend = "⬇️"   # Down slightly
+            else:
+                trend = "‼️⬇️⬇️⬇️‼️"  # Down significantly
+            
+        return f"""⛏️ <b>Nockchain Mining Metrics</b>
 
 <b>📊 Network Stats</b>
 ├ Difficulty: <code>{self.difficulty}</code>
-├ Proofrate: <code>{self.proofrate}</code>
+├ Proofrate: <code>{self.proofrate}</code> {trend}
 ├ Avg Block Time: <code>{self.avg_block_time}</code>
 └ Latest Block: <code>{self.latest_block}</code>
 
