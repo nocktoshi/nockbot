@@ -24,7 +24,7 @@ from config import (
     PROOFRATE_ALERT_THRESHOLD,
     MONITOR_INTERVAL_MINUTES,
 )
-from scraper import get_metrics, get_tip, MiningMetrics
+from scraper import get_metrics, get_tip, get_24h_volume, MiningMetrics
 
 # Configure logging
 logging.basicConfig(
@@ -270,6 +270,39 @@ async def tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /volume command - show 24h transaction volume."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    data = await get_24h_volume()
+    
+    if data:
+        vol = data['volume_nock']
+        tx_count = data['tx_count']
+        block_count = data['block_count']
+        
+        # Format volume nicely
+        if vol >= 1000:
+            vol_str = f"{vol:,.0f}"
+        else:
+            vol_str = f"{vol:,.2f}"
+        
+        await update.message.reply_text(
+            f"💰 <b>24h Transaction Volume</b>\n\n"
+            f"├ Volume: <code>{vol_str} NOCK</code>\n"
+            f"├ Transactions: <code>{tx_count}</code>\n"
+            f"└ Blocks: <code>{block_count}</code>\n\n"
+            f"🔗 <a href='https://nockblocks.com/metrics'>View on NockBlocks</a>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Could not fetch volume data. Try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button callbacks."""
     query = update.callback_query
@@ -422,6 +455,7 @@ def main() -> None:
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("tip", tip))
+    app.add_handler(CommandHandler("volume", volume))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(ChatMemberHandler(track_chat_membership, ChatMemberHandler.MY_CHAT_MEMBER))
     

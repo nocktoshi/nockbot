@@ -118,6 +118,53 @@ class NockBlocksAPI:
         """Get the latest block (tip of the chain)."""
         return await self._rpc_call("getTip", [])
     
+    async def get_blocks_by_timestamp_range(self, min_ts: int, max_ts: int) -> Optional[list[dict]]:
+        """Get blocks within a timestamp range."""
+        return await self._rpc_call("getBlocksByTimestampRange", [{"minTimestamp": min_ts, "maxTimestamp": max_ts}])
+    
+    async def get_transactions_by_block_height(self, height: int) -> Optional[list[dict]]:
+        """Get transactions for a specific block height."""
+        return await self._rpc_call("getTransactionsByBlockHeight", [{"height": height}])
+    
+    async def fetch_24h_volume(self) -> Optional[dict]:
+        """Fetch 24-hour transaction volume."""
+        import time
+        
+        now = int(time.time())
+        day_ago = now - 86400
+        
+        # Get blocks from last 24h
+        blocks = await self.get_blocks_by_timestamp_range(day_ago, now)
+        if not blocks:
+            return None
+        
+        # Get heights of blocks with transactions
+        heights_with_txs = [b['height'] for b in blocks if b.get('txids')]
+        
+        total_volume = 0
+        tx_count = 0
+        
+        # Fetch transactions for each block
+        for height in heights_with_txs:
+            txs = await self.get_transactions_by_block_height(height)
+            if not txs:
+                continue
+            
+            for tx in txs:
+                tx_count += 1
+                for output in tx.get('outputs', []):
+                    for seed in output.get('seeds', []):
+                        total_volume += seed.get('gift', 0)
+        
+        # Convert nicks to NOCK (1 NOCK = 2^16 = 65,536 nicks)
+        nock_volume = total_volume / 65_536
+        
+        return {
+            'volume_nock': nock_volume,
+            'tx_count': tx_count,
+            'block_count': len(blocks),
+        }
+    
     async def fetch_metrics(self) -> Optional[MiningMetrics]:
         """Fetch mining metrics by analyzing recent blocks."""
         try:
@@ -275,6 +322,19 @@ async def get_tip() -> Optional[dict]:
     api = NockBlocksAPI(NOCKBLOCKS_API_KEY)
     try:
         return await api.get_tip()
+    finally:
+        await api.close()
+
+
+async def get_24h_volume() -> Optional[dict]:
+    """Get 24-hour transaction volume."""
+    if not NOCKBLOCKS_API_KEY:
+        print("Warning: NOCKBLOCKS_API_KEY not set")
+        return None
+    
+    api = NockBlocksAPI(NOCKBLOCKS_API_KEY)
+    try:
+        return await api.fetch_24h_volume()
     finally:
         await api.close()
 
