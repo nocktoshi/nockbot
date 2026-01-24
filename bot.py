@@ -795,9 +795,10 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
         f"• Duration: {days} days\n"
         f"• Expires: <code>{expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}</code>\n"
         f"• Stars paid: ⭐ {payment.total_amount}\n\n"
-        "<b>You will now receive alerts when:</b>\n"
+        "<b>You will now receive alerts direct to your DMs when:</b>\n"
         f"• Proofrate drops below {PROOFRATE_ALERT_FLOOR} MP/s\n"
         f"• Proofrate rises above {PROOFRATE_ALERT_CEILING} MP/s\n\n"
+        "Use /setalerts <floor> <ceiling> to set your own thresholds\n\n"
         "Use /subscription to check your status anytime.",
         parse_mode=ParseMode.HTML,
     )
