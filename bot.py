@@ -7,14 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMemberUpdated
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     ContextTypes,
 )
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatMemberStatus
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import (
@@ -32,39 +33,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Subscriber persistence
+# Persistence files
 SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
+GROUP_CHATS_FILE = Path(__file__).parent / "group_chats.json"
+
+
+def load_json_set(filepath: Path, key: str) -> set[int]:
+    """Load a set of IDs from a JSON file."""
+    if filepath.exists():
+        try:
+            with open(filepath, "r") as f:
+                data = json.load(f)
+                ids = data.get(key, [])
+                if not isinstance(ids, list):
+                    logger.warning(f"Invalid {key} format in {filepath.name}, expected list")
+                    return set()
+                return set(ids)
+        except (json.JSONDecodeError, IOError, TypeError) as e:
+            logger.error(f"Failed to load {filepath.name}: {e}")
+    return set()
+
+
+def save_json_set(filepath: Path, key: str, data: set[int]) -> None:
+    """Save a set of IDs to a JSON file."""
+    try:
+        with open(filepath, "w") as f:
+            json.dump({key: list(data)}, f)
+    except IOError as e:
+        logger.error(f"Failed to save {filepath.name}: {e}")
 
 
 def load_subscribers() -> set[int]:
     """Load subscribers from disk."""
-    if SUBSCRIBERS_FILE.exists():
-        try:
-            with open(SUBSCRIBERS_FILE, "r") as f:
-                data = json.load(f)
-                chat_ids = data.get("chat_ids", [])
-                if not isinstance(chat_ids, list):
-                    logger.warning("Invalid chat_ids format in subscribers.json, expected list")
-                    return set()
-                return set(chat_ids)
-        except (json.JSONDecodeError, IOError, TypeError) as e:
-            logger.error(f"Failed to load subscribers: {e}")
-    return set()
+    return load_json_set(SUBSCRIBERS_FILE, "chat_ids")
 
 
 def save_subscribers() -> None:
     """Save subscribers to disk."""
-    try:
-        with open(SUBSCRIBERS_FILE, "w") as f:
-            json.dump({"chat_ids": list(subscribed_chats)}, f)
-    except IOError as e:
-        logger.error(f"Failed to save subscribers: {e}")
+    save_json_set(SUBSCRIBERS_FILE, "chat_ids", subscribed_chats)
+
+
+def load_group_chats() -> set[int]:
+    """Load group chats from disk."""
+    return load_json_set(GROUP_CHATS_FILE, "group_ids")
+
+
+def save_group_chats() -> None:
+    """Save group chats to disk."""
+    save_json_set(GROUP_CHATS_FILE, "group_ids", group_chats)
 
 
 # Global state
 last_metrics: Optional[MiningMetrics] = None
 alert_triggered = False
 subscribed_chats: set[int] = load_subscribers()
+group_chats: set[int] = load_group_chats()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -143,9 +166,9 @@ async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /subscribe command."""
-    chat_id = update.effective_chat.id
-    subscribed_chats.add(chat_id)
+    """Handle /subscribe command - subscribes the user (not the chat)."""
+    user_id = update.effective_user.id
+    subscribed_chats.add(user_id)
     save_subscribers()
     
     await update.message.reply_text(
@@ -154,15 +177,16 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s\n"
         "• Proofrate recovers above threshold\n"
         f"• Metrics are checked every {MONITOR_INTERVAL_MINUTES} minutes\n\n"
+        "Alerts will be sent to your DMs.\n"
         "Use /unsubscribe to stop receiving alerts.",
         parse_mode=ParseMode.HTML,
     )
 
 
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /unsubscribe command."""
-    chat_id = update.effective_chat.id
-    subscribed_chats.discard(chat_id)
+    """Handle /unsubscribe command - unsubscribes the user."""
+    user_id = update.effective_user.id
+    subscribed_chats.discard(user_id)
     save_subscribers()
     
     await update.message.reply_text(
@@ -181,7 +205,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status_text += f"• Monitoring: <code>Active</code>\n"
     status_text += f"• Check Interval: <code>{MONITOR_INTERVAL_MINUTES} min</code>\n"
     status_text += f"• Alert Threshold: <code>{PROOFRATE_ALERT_THRESHOLD} MP/s</code>\n"
-    status_text += f"• Subscribers: <code>{len(subscribed_chats)}</code>\n\n"
+    status_text += f"• Subscribers: <code>{len(subscribed_chats)}</code>\n"
+    status_text += f"• Group Chats: <code>{len(group_chats)}</code>\n\n"
     
     if last_metrics:
         status_text += f"<b>Last Known Metrics:</b>\n"
@@ -268,10 +293,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
     
     elif query.data == "subscribe":
-        subscribed_chats.add(update.effective_chat.id)
+        subscribed_chats.add(update.effective_user.id)
         save_subscribers()
         await query.message.reply_text(
-            f"🔔 Subscribed! You'll get alerts when proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s.",
+            f"🔔 Subscribed! You'll get alerts in your DMs when proofrate drops below {PROOFRATE_ALERT_THRESHOLD} MP/s.",
             parse_mode=ParseMode.HTML,
         )
     
@@ -280,6 +305,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Use /help to see all available commands.",
             parse_mode=ParseMode.HTML,
         )
+
+
+async def track_chat_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Track when bot is added or removed from group chats."""
+    result = update.my_chat_member
+    if not result:
+        return
+    
+    chat = result.chat
+    # Only track group chats (not private chats)
+    if chat.type not in ["group", "supergroup"]:
+        return
+    
+    new_status = result.new_chat_member.status
+    
+    if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR]:
+        # Bot was added to group
+        if chat.id not in group_chats:
+            group_chats.add(chat.id)
+            save_group_chats()
+            logger.info(f"Bot added to group: {chat.title} ({chat.id})")
+    elif new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
+        # Bot was removed from group
+        if chat.id in group_chats:
+            group_chats.discard(chat.id)
+            save_group_chats()
+            logger.info(f"Bot removed from group: {chat.title} ({chat.id})")
 
 
 async def check_and_alert(app: Application) -> None:
@@ -296,10 +348,10 @@ async def check_and_alert(app: Application) -> None:
     last_metrics = metrics
     logger.info(f"Current proofrate: {metrics.proofrate} ({metrics.proofrate_value:.3f} MP/s)")
     
-    # Check if we need to alert
-    all_subscribers = subscribed_chats.union(set(ALERT_CHAT_IDS))
+    # Check if we need to alert - combine user subscribers, config chat IDs, and group chats
+    all_recipients = subscribed_chats.union(set(ALERT_CHAT_IDS)).union(group_chats)
     
-    if not all_subscribers:
+    if not all_recipients:
         return
     
     # Alert if proofrate drops below threshold
@@ -312,7 +364,7 @@ async def check_and_alert(app: Application) -> None:
             f"Difficulty: <code>{metrics.difficulty}</code>\n\n"
             f"🔗 <a href='https://nockblocks.com/metrics?tab=mining'>View Details</a>"
         )
-        for chat_id in all_subscribers:
+        for chat_id in all_recipients:
             try:
                 await app.bot.send_message(
                     chat_id=chat_id,
@@ -332,7 +384,7 @@ async def check_and_alert(app: Application) -> None:
             f"Current: <code>{metrics.proofrate}</code>\n"
             f"Difficulty: <code>{metrics.difficulty}</code>"
         )
-        for chat_id in all_subscribers:
+        for chat_id in all_recipients:
             try:
                 await app.bot.send_message(
                     chat_id=chat_id,
@@ -371,6 +423,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("tip", tip))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(ChatMemberHandler(track_chat_membership, ChatMemberHandler.MY_CHAT_MEMBER))
     
     # Set up periodic monitoring
     scheduler = AsyncIOScheduler()
