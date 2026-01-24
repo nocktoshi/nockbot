@@ -423,7 +423,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status_text += f"• Proofrate: <code>{last_metrics.proofrate}</code>\n"
         status_text += f"• Block: <code>{last_metrics.latest_block}</code>\n"
     else:
-        status_text += "<i>No metrics cached yet. Use /hashrate to fetch.</i>"
+        status_text += "<i>No metrics cached yet. Use /proofrate to fetch.</i>"
     
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
