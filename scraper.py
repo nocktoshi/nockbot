@@ -266,6 +266,19 @@ async def get_metrics() -> Optional[MiningMetrics]:
         await api.close()
 
 
+async def get_tip() -> Optional[dict]:
+    """Get the latest block (chain tip)."""
+    if not NOCKBLOCKS_API_KEY:
+        print("Warning: NOCKBLOCKS_API_KEY not set")
+        return None
+    
+    api = NockBlocksAPI(NOCKBLOCKS_API_KEY)
+    try:
+        return await api.get_tip()
+    finally:
+        await api.close()
+
+
 # Test
 if __name__ == "__main__":
     async def test():

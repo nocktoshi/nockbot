@@ -23,7 +23,7 @@ from config import (
     PROOFRATE_ALERT_THRESHOLD,
     MONITOR_INTERVAL_MINUTES,
 )
-from scraper import get_metrics, MiningMetrics
+from scraper import get_metrics, get_tip, MiningMetrics
 
 # Configure logging
 logging.basicConfig(
@@ -189,6 +189,54 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
 
+async def tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /tip command - show latest block."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    block = await get_tip()
+    
+    if block:
+        height = block.get("height", "N/A")
+        timestamp = block.get("timestamp", 0)
+        digest = block.get("digest", "N/A")
+        epoch = block.get("epochCounter", "N/A")
+        
+        # Format timestamp
+        if timestamp:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(timestamp)
+            time_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            
+            # Calculate time ago
+            seconds_ago = int(datetime.now().timestamp() - timestamp)
+            if seconds_ago < 60:
+                ago_str = f"{seconds_ago}s ago"
+            elif seconds_ago < 3600:
+                ago_str = f"{seconds_ago // 60}m {seconds_ago % 60}s ago"
+            else:
+                ago_str = f"{seconds_ago // 3600}h {(seconds_ago % 3600) // 60}m ago"
+        else:
+            time_str = "N/A"
+            ago_str = ""
+        
+        await update.message.reply_text(
+            f"🧊 <b>Latest Block</b>\n\n"
+            f"├ Height: <code>{height}</code>\n"
+            f"├ Epoch: <code>{epoch}</code>\n"
+            f"├ Time: <code>{time_str}</code>\n"
+            f"├ Age: <code>{ago_str}</code>\n"
+            f"└ Hash: <code>{digest[:16]}...</code>\n\n"
+            f"🔗 <a href='https://nockblocks.com/block/{height}'>View on NockBlocks</a>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Could not fetch latest block. Try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button callbacks."""
     query = update.callback_query
@@ -313,6 +361,7 @@ def main() -> None:
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("tip", tip))
     app.add_handler(CallbackQueryHandler(button_callback))
     
     # Set up periodic monitoring
