@@ -259,8 +259,19 @@ class NockBlocksAPI:
         
         # Calculate proofrate (work per second)
         if time_diff > 0 and work_diff > 0:
-            proofrate = work_diff / time_diff  # proofs per second
-            proofrate_mps = proofrate / 1_000_000  # MP/s
+            proofrate_raw = work_diff / time_diff  # proofs per second
+            
+            # Adjust proofrate to target block time (normalize to 10-minute blocks)
+            # This matches NockBlocks' "Proofrate adj by blocktime" metric
+            # If blocks are faster than target (e.g., 6min vs 10min), this scales up the proofrate
+            # If blocks are slower than target (e.g., 15min vs 10min), this scales down the proofrate
+            if avg_block_time_seconds > 0:
+                blocktime_adjustment = self.TARGET_BLOCK_TIME / avg_block_time_seconds
+                proofrate_adjusted = proofrate_raw * blocktime_adjustment
+            else:
+                proofrate_adjusted = proofrate_raw
+            
+            proofrate_mps = proofrate_adjusted / 1_000_000  # MP/s
         else:
             proofrate_mps = 0.0
         
