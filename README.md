@@ -1,4 +1,5 @@
-# ⛏️ Nockbot
+
+<img src="https://github.com/user-attachments/assets/a2777e66-d3aa-4f4f-85d5-d396e108e413" width="400" height="400" alt="nockbot">
 
 A Telegram bot that monitors the hashrate (proofrate) of the Nockchain network using data from [NockBlocks](https://nockblocks.com).
 
