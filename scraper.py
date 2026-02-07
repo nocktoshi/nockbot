@@ -192,21 +192,43 @@ class NockBlocksAPI:
                 print("Invalid latest block height")
                 return None
             
-            # Fetch block from 100 blocks ago for comparison
+            # Fetch block from 100 blocks ago for difficulty calculation
             first_height = max(1, latest_height - 100)
-            blocks_data = await self.get_blocks_by_height([first_height])
             
-            if not blocks_data or len(blocks_data) < 1 or not blocks_data[0]:
-                print("Could not fetch comparison block")
+            # Calculate epoch start height for epoch-based avg block time
+            epoch_counter = latest_block.get("epochCounter", 0)
+            epoch_start_height = latest_height - epoch_counter + 1
+            
+            # Fetch both comparison block and epoch start block
+            heights_to_fetch = list(set([first_height, epoch_start_height]))
+            blocks_data = await self.get_blocks_by_height(heights_to_fetch)
+            
+            if not blocks_data or len(blocks_data) < 1:
+                print("Could not fetch comparison blocks")
                 return None
             
-            first_block = blocks_data[0]
+            # Map fetched blocks by height
+            blocks_by_height = {b["height"]: b for b in blocks_data if b}
             
-            # Number of block intervals between first and latest
+            first_block = blocks_by_height.get(first_height)
+            epoch_start_block = blocks_by_height.get(epoch_start_height)
+            
+            if not first_block:
+                print("Could not fetch 100-block comparison block")
+                return None
+            
+            if not epoch_start_block:
+                print("Could not fetch epoch start block, falling back to 100-block window")
+                epoch_start_block = first_block
+            
+            # Number of block intervals between first and latest (for difficulty)
             num_intervals = latest_height - first_height
             
             # Calculate metrics
-            return self._calculate_metrics(first_block, latest_block, latest_height, num_intervals)
+            return self._calculate_metrics(
+                first_block, latest_block, latest_height,
+                num_intervals, epoch_start_block, epoch_counter
+            )
             
         except Exception as e:
             print(f"Error fetching metrics: {e}")
@@ -219,25 +241,40 @@ class NockBlocksAPI:
         first_block: dict, 
         latest_block: dict, 
         latest_height: int,
-        num_intervals: int
+        num_intervals: int,
+        epoch_start_block: dict,
+        epoch_counter: int,
     ) -> MiningMetrics:
         """Calculate mining metrics from block data."""
         
-        # Get timestamps and accumulated work
-        first_ts = first_block.get("timestamp", 0)
-        latest_ts = latest_block.get("timestamp", 0)
+        # --- Difficulty from 100-block window ---
         first_work = int(first_block.get("accumulatedWork", 0))
         latest_work = int(latest_block.get("accumulatedWork", 0))
-        
-        # Calculate time and work differences
-        time_diff = latest_ts - first_ts  # seconds
         work_diff = latest_work - first_work
         
-        # Calculate average block time (time_diff / number of block intervals)
-        if time_diff > 0 and num_intervals > 0:
-            avg_block_time_seconds = time_diff / num_intervals
+        if num_intervals > 0 and work_diff > 0:
+            work_per_block = work_diff / num_intervals
+            difficulty_exp = math.log2(work_per_block) if work_per_block > 0 else 0
+            difficulty_str = f"2^{difficulty_exp:.1f}"
         else:
-            avg_block_time_seconds = 0
+            difficulty_str = "N/A"
+            work_per_block = 0
+        
+        # --- Average block time from current epoch ---
+        # Using the full epoch gives a much more stable and accurate average
+        # than just the last 100 blocks, which can be skewed by variance.
+        epoch_ts = epoch_start_block.get("timestamp", 0)
+        latest_ts = latest_block.get("timestamp", 0)
+        epoch_time_diff = latest_ts - epoch_ts
+        epoch_intervals = epoch_counter - 1  # epoch_counter is 1-based block count in epoch
+        
+        if epoch_time_diff > 0 and epoch_intervals > 0:
+            avg_block_time_seconds = epoch_time_diff / epoch_intervals
+        else:
+            # Fallback to 100-block window
+            first_ts = first_block.get("timestamp", 0)
+            time_diff_100 = latest_ts - first_ts
+            avg_block_time_seconds = time_diff_100 / num_intervals if num_intervals > 0 else 0
         
         # Format average block time
         if avg_block_time_seconds > 0:
@@ -247,44 +284,26 @@ class NockBlocksAPI:
         else:
             avg_block_time_str = "N/A"
         
-        # Calculate difficulty from work per block
-        # Difficulty = average work per block
-        if num_intervals > 0 and work_diff > 0:
-            work_per_block = work_diff / num_intervals
-            difficulty_exp = math.log2(work_per_block) if work_per_block > 0 else 0
-            difficulty_str = f"2^{difficulty_exp:.1f}"
-        else:
-            difficulty_str = "N/A"
-            difficulty_exp = 0
-        
-        # Calculate proofrate (work per second)
-        if time_diff > 0 and work_diff > 0:
-            proofrate_raw = work_diff / time_diff  # proofs per second
-            
-            # Adjust proofrate to target block time (normalize to 10-minute blocks)
-            # This matches NockBlocks' "Proofrate adj by blocktime" metric
-            # If blocks are faster than target (e.g., 6min vs 10min), this scales up the proofrate
-            # If blocks are slower than target (e.g., 15min vs 10min), this scales down the proofrate
-            if avg_block_time_seconds > 0:
-                blocktime_adjustment = self.TARGET_BLOCK_TIME / avg_block_time_seconds
-                proofrate_adjusted = proofrate_raw * blocktime_adjustment
-            else:
-                proofrate_adjusted = proofrate_raw
-            
-            proofrate_mps = proofrate_adjusted / 1_000_000  # MP/s
+        # --- Proofrate ---
+        # Nockchain's accumulatedWork per block is 2x the expected proof count
+        # (work = 2^320 / target, while expected proofs = 2^319 / target).
+        # Proofrate = (work_per_block / 2) / avg_block_time, matching NockBlocks'
+        # "proofrate adj by blocktime" metric.
+        if work_per_block > 0 and avg_block_time_seconds > 0:
+            proofrate = (work_per_block / 2) / avg_block_time_seconds  # proofs per second
+            proofrate_mps = proofrate / 1_000_000  # MP/s
         else:
             proofrate_mps = 0.0
         
         # Format proofrate
         if proofrate_mps >= 1000:
             proofrate_str = f"{proofrate_mps / 1000:.2f} GP/s"
-        elif proofrate_mps >= 0.01:
+        elif proofrate_mps >= 1.0:
             proofrate_str = f"{proofrate_mps:.2f} MP/s"
         else:
             proofrate_str = f"{proofrate_mps * 1000:.2f} KP/s"
         
-        # Calculate epoch progress
-        epoch_counter = latest_block.get("epochCounter", 0)
+        # --- Epoch progress ---
         epoch_block = epoch_counter % self.BLOCKS_PER_EPOCH
         if epoch_block == 0 and epoch_counter > 0:
             epoch_block = self.BLOCKS_PER_EPOCH
@@ -294,7 +313,7 @@ class NockBlocksAPI:
         # Blocks to difficulty adjustment
         blocks_to_adj = self.BLOCKS_PER_EPOCH - epoch_block
         
-        # Estimated time to adjustment
+        # Estimated time to adjustment (using epoch avg block time)
         if avg_block_time_seconds > 0:
             est_seconds = blocks_to_adj * avg_block_time_seconds
             est_days = int(est_seconds // 86400)
