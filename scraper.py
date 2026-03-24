@@ -290,12 +290,12 @@ class NockBlocksAPI:
         else:
             avg_block_time_str = "N/A"
         
-        # --- Proofrate (must use same block-time window as work_per_block: last 100 blocks) ---
-        # Nockchain's accumulatedWork per block is 2x the expected proof count
-        # (work = 2^320 / target, while expected proofs = 2^319 / target).
+        # --- Proofrate (same window as difficulty: last 100 blocks) ---
+        # NockBlocks "PROOFRATE (LAST 100 BLOCKS)" is work rate: avg accumulatedWork per block
+        # divided by avg block interval (MP/s = 1e6 work-units per second), not half-work.
         if work_per_block > 0 and avg_block_time_100 > 0:
-            proofrate = (work_per_block / 2) / avg_block_time_100  # proofs per second
-            proofrate_mps = proofrate / 1_000_000  # MP/s
+            proofrate = work_per_block / avg_block_time_100
+            proofrate_mps = proofrate / 1_000_000
         else:
             proofrate_mps = 0.0
         
