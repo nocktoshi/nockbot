@@ -50,7 +50,7 @@ class MiningMetrics:
 
 <b>📊 Network Stats</b>
 ├ Difficulty: <code>{self.difficulty}</code>
-├ Proofrate: <code>{self.proofrate}</code> {trend}
+├ Proofrate (100 blocks): <code>{self.proofrate}</code> {trend}
 ├ Avg Block Time: <code>{self.avg_block_time}</code>
 └ Latest Block: <code>{self.latest_block}</code>
 
@@ -260,9 +260,7 @@ class NockBlocksAPI:
             difficulty_str = "N/A"
             work_per_block = 0
         
-        # --- Average block time from current epoch ---
-        # Using the full epoch gives a much more stable and accurate average
-        # than just the last 100 blocks, which can be skewed by variance.
+        # --- Average block time (epoch) for display, ETA, and next adj ratio ---
         epoch_ts = epoch_start_block.get("timestamp", 0)
         latest_ts = latest_block.get("timestamp", 0)
         epoch_time_diff = latest_ts - epoch_ts
@@ -271,10 +269,18 @@ class NockBlocksAPI:
         if epoch_time_diff > 0 and epoch_intervals > 0:
             avg_block_time_seconds = epoch_time_diff / epoch_intervals
         else:
-            # Fallback to 100-block window
-            first_ts = first_block.get("timestamp", 0)
-            time_diff_100 = latest_ts - first_ts
-            avg_block_time_seconds = time_diff_100 / num_intervals if num_intervals > 0 else 0
+            first_ts_fb = first_block.get("timestamp", 0)
+            time_diff_fb = latest_ts - first_ts_fb
+            avg_block_time_seconds = (
+                time_diff_fb / num_intervals if num_intervals > 0 else 0
+            )
+
+        # --- Same window as difficulty: last ~100 blocks (NockBlocks "PROOFRATE (LAST 100 BLOCKS)") ---
+        first_ts = first_block.get("timestamp", 0)
+        time_diff_100 = latest_ts - first_ts
+        avg_block_time_100 = (
+            time_diff_100 / num_intervals if num_intervals > 0 and time_diff_100 > 0 else 0.0
+        )
         
         # Format average block time
         if avg_block_time_seconds > 0:
@@ -284,13 +290,11 @@ class NockBlocksAPI:
         else:
             avg_block_time_str = "N/A"
         
-        # --- Proofrate ---
+        # --- Proofrate (must use same block-time window as work_per_block: last 100 blocks) ---
         # Nockchain's accumulatedWork per block is 2x the expected proof count
         # (work = 2^320 / target, while expected proofs = 2^319 / target).
-        # Proofrate = (work_per_block / 2) / avg_block_time, matching NockBlocks'
-        # "proofrate adj by blocktime" metric.
-        if work_per_block > 0 and avg_block_time_seconds > 0:
-            proofrate = (work_per_block / 2) / avg_block_time_seconds  # proofs per second
+        if work_per_block > 0 and avg_block_time_100 > 0:
+            proofrate = (work_per_block / 2) / avg_block_time_100  # proofs per second
             proofrate_mps = proofrate / 1_000_000  # MP/s
         else:
             proofrate_mps = 0.0

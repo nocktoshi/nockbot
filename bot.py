@@ -1217,6 +1217,20 @@ def main() -> None:
         scheduler.shutdown()
         logger.info("Scheduler stopped.")
     
+    # Global error handler for transient network issues (timeouts, etc.)
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log errors and handle transient network issues gracefully."""
+        import telegram.error
+        err = context.error
+        if isinstance(err, telegram.error.TimedOut):
+            logger.warning("Telegram API request timed out — will retry on next interaction.")
+        elif isinstance(err, telegram.error.NetworkError):
+            logger.warning(f"Network error communicating with Telegram: {err}")
+        else:
+            logger.error(f"Unhandled exception: {err}", exc_info=context.error)
+
+    app.add_error_handler(error_handler)
+    
     app.post_init = on_startup
     app.post_shutdown = on_shutdown
     
