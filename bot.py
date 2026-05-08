@@ -36,7 +36,7 @@ from config import (
     SUBSCRIPTION_PRICE_STARS,
     SUBSCRIPTION_DURATION_DAYS,
 )
-from scraper import get_metrics, get_tip, get_24h_volume, MiningMetrics
+from scraper import get_metrics, get_tip, get_24h_volume, get_emissions_display, MiningMetrics
 
 # Configure logging
 logging.basicConfig(
@@ -248,7 +248,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>/asert</b>\n"
         "ASERT status: blocks since anchor, time since anchor, schedule drift, implied target factor, half-life.\n\n"
         "<b>/emissions</b>\n"
-        "Aletheia emissions at current height: block reward (NOCK) and issuance (NOCK/min).\n\n"
+        "Block reward, issuance (NOCK/min), protocol fund balance (<code>getTransactionsByAddress</code> <code>currentBalance</code>), and USD value (CoinGecko <code>nockchain</code> or <code>NOCK_USD_PRICE</code> in .env).\n\n"
         "<b>/tip</b>\n"
         "Get the latest block info:\n"
         "• Block height and epoch\n"
@@ -336,12 +336,16 @@ async def asert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def emissions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /emissions — block reward and issuance."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    metrics = await get_metrics()
-    if metrics:
+    disp = await get_emissions_display()
+    if disp:
         global last_metrics
-        last_metrics = metrics
+        last_metrics = disp.metrics
         await update.message.reply_text(
-            metrics.format_emissions_message(),
+            disp.metrics.format_emissions_message(
+                fund_nock=disp.fund_nock,
+                fund_usd=disp.fund_usd,
+                nock_usd_price=disp.nock_usd_price,
+            ),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )

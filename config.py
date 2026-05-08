@@ -1,8 +1,21 @@
 """Configuration for Nockchain Hashrate Monitor Bot."""
 import os
+from typing import Optional
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def nock_usd_price_override() -> Optional[float]:
+    """If set, /emissions uses this USD/NOCK instead of CoinGecko."""
+    raw = os.getenv("NOCK_USD_PRICE", "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
 # Telegram Bot Token (required)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")

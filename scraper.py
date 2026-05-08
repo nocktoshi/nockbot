@@ -2,12 +2,21 @@
 import asyncio
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 import httpx
 
-from config import NOCKBLOCKS_API_KEY
+from config import NOCKBLOCKS_API_KEY, nock_usd_price_override
+
+# Aletheia protocol fund (20% of post-activation coinbase); explorer address form.
+PROTOCOL_FUND_ADDRESS = "9EhcJiGhAPcWLYrR9DL4ZPjU2Z9XT6FT2ZFkEEwmSQv7ES2TMC7p6Up"
+NICKS_PER_NOCK = 65_536
+
+# CoinGecko `nockchain` USD; refreshed at most every 15 minutes (unless NOCK_USD_PRICE env override).
+_coingecko_nock_usd_cache: Optional[tuple[float, float]] = None  # (price, monotonic_ts)
+_COINGECKO_TTL_SEC = 900.0  # 15 minutes
 
 # ASERT anchor block is consensus-fixed; cache across API client lifetimes.
 _cached_asert_anchor: Optional[dict] = None
@@ -35,6 +44,58 @@ def block_reward_nock(height: int) -> int:
             return _DECAY_REWARDS[era_idx]
         return 64
     return 64
+
+
+def format_nock_amount(n: float) -> str:
+    """Whole NOCK with comma grouping, e.g. 2048 → '2,048 ℕOCK'."""
+    try:
+        rounded = int(round(float(n)))
+    except (TypeError, ValueError):
+        return "0 ℕOCK"
+    return f"{rounded:,} ℕOCK"
+
+def format_usd(amount: float) -> str:
+    """USD line like '$1,849.79 USD'."""
+    return f"${amount:,.2f} USD"
+
+
+def current_balance_nock_from_tx_address_result(result: Optional[dict]) -> Optional[float]:
+    """`currentBalance` from getTransactionsByAddress (atoms); one RPC with limit=1 suffices."""
+    if not result or not isinstance(result, dict):
+        return None
+    raw = result.get("currentBalance")
+    if raw is None:
+        return None
+    try:
+        return int(raw) / NICKS_PER_NOCK
+    except (TypeError, ValueError):
+        return None
+
+
+async def fetch_nock_usd_price() -> Optional[float]:
+    """USD per 1 NOCK: env override, else CoinGecko (cached 15 min)."""
+    override = nock_usd_price_override()
+    if override is not None:
+        return override
+    global _coingecko_nock_usd_cache
+    now = time.monotonic()
+    if _coingecko_nock_usd_cache and (now - _coingecko_nock_usd_cache[1]) < _COINGECKO_TTL_SEC:
+        return _coingecko_nock_usd_cache[0]
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "nockchain", "vs_currencies": "usd"},
+            )
+            r.raise_for_status()
+            usd = r.json().get("nockchain", {}).get("usd")
+            if isinstance(usd, (int, float)):
+                p = float(usd)
+                _coingecko_nock_usd_cache = (p, now)
+                return p
+    except Exception as e:
+        print(f"fetch_nock_usd_price: {e}")
+    return None
 
 
 def _format_signed_duration(seconds: float) -> str:
@@ -108,17 +169,56 @@ class MiningMetrics:
 ├ Time since anchor: <code>{self.time_since_anchor}</code>
 ├ Schedule drift: <code>{self.schedule_drift}</code>
 ├ Implied target factor: <code>{self.asert_target_factor}</code>
-└ Half-life: <code>12h</code>
 
 🔗 <a href="https://nockblocks.com/metrics?tab=mining">View on NockBlocks</a>"""
 
-    def format_emissions_message(self) -> str:
+    def format_emissions_message(
+        self,
+        *,
+        fund_nock: Optional[float] = None,
+        fund_usd: Optional[float] = None,
+        nock_usd_price: Optional[float] = None,
+    ) -> str:
         """Post-Aletheia emissions at current height (use with /emissions)."""
-        return f"""💰 <b>Emissions</b>
-<i>Block <code>{self.latest_block}</code></i>
+        base = f"""<i>Block <code>{self.latest_block}</code></i>
 
-├ Block reward: <code>{self.block_reward_nock:,} NOCK</code>
-└ Issuance: <code>{self.nock_per_minute:,.1f} NOCK/min</code>
+💰 <b>Emissions</b>
+├ Block reward: <code>{format_nock_amount(self.block_reward_nock)}</code>
+└ Issuance: <code>{format_nock_amount(self.nock_per_minute)}/min</code>"""
+
+        addr = PROTOCOL_FUND_ADDRESS
+        explorer = f'<a href="https://nockblocks.com/address/{addr}">9EhcJ...7p6Up</a>'
+
+        if fund_nock is not None:
+            nk = format_nock_amount(fund_nock)
+            if fund_usd is not None:
+                usd = format_usd(fund_usd)
+                hint = (
+                    f' <i>(≈ ${nock_usd_price:,.4f}/NOCK)</i>'
+                    if nock_usd_price is not None
+                    else ""
+                )
+                fund_block = f"""
+
+<b>🏛 Protocol Fund</b>
+{explorer}
+├ Balance: <code>{nk}</code>
+└ Value: <code>{usd}</code>{hint}"""
+            else:
+                fund_block = f"""
+
+<b>🏛 Protocol Fund</b>
+{explorer}
+├ Balance: <code>{nk}</code>
+└ Value: <i>USD unavailable</i> <i>(CoinGecko / set NOCK_USD_PRICE in .env)</i>"""
+        else:
+            fund_block = f"""
+
+<b>🏛 Protocol Fund</b>
+{explorer}
+└ <i>Balance unavailable</i>"""
+
+        return f"""{base}{fund_block}
 
 🔗 <a href="https://nockblocks.com/metrics?tab=mining">View on NockBlocks</a>"""
 
@@ -199,6 +299,15 @@ class NockBlocksAPI:
         """Get transactions for a specific block height."""
         return await self._rpc_call("getTransactionsByBlockHeight", [{"height": height}])
 
+    async def get_transactions_by_address(
+        self, address: str, *, limit: int = 1, offset: int = 0
+    ) -> Optional[dict]:
+        """Address tx history + balance summary (`currentBalance` in atoms)."""
+        return await self._rpc_call(
+            "getTransactionsByAddress",
+            [{"address": address, "limit": limit, "offset": offset}],
+        )
+
     async def fetch_24h_volume(self) -> Optional[dict]:
         """Fetch 24-hour transaction volume."""
         import time
@@ -228,7 +337,7 @@ class NockBlocksAPI:
                             continue
                         total_volume += seed.get("gift", 0)
 
-        nock_volume = total_volume / 65_536
+        nock_volume = total_volume / NICKS_PER_NOCK
 
         return {
             "volume_nock": nock_volume,
@@ -360,9 +469,9 @@ class NockBlocksAPI:
             if abs(schedule_drift_s) < 30:
                 drift_str = "on schedule"
             elif schedule_drift_s > 0:
-                drift_str = f"+{_format_signed_duration(schedule_drift_s)} (slow vs ideal)"
+                drift_str = f"+{_format_signed_duration(schedule_drift_s)} (🐌🐌🐌 slower)"
             else:
-                drift_str = f"-{_format_signed_duration(schedule_drift_s)} (fast vs ideal)"
+                drift_str = f"-{_format_signed_duration(schedule_drift_s)} (🐇🐇🐇 faster)"
 
             exp_clamped = max(-30.0, min(30.0, schedule_drift_s / self.ASERT_HALF_LIFE))
             factor = 2.0**exp_clamped
@@ -395,6 +504,45 @@ class NockBlocksAPI:
             block_reward_nock=reward,
             nock_per_minute=nock_per_min,
         )
+
+
+@dataclass
+class EmissionsDisplay:
+    """Mining metrics plus protocol-fund balance for /emissions."""
+
+    metrics: MiningMetrics
+    fund_nock: Optional[float]
+    fund_usd: Optional[float]
+    nock_usd_price: Optional[float]
+
+
+async def get_emissions_display() -> Optional[EmissionsDisplay]:
+    """Fetch chain emissions plus protocol fund balance (getTransactionsByAddress summary) and USD."""
+    if not NOCKBLOCKS_API_KEY:
+        print("Warning: NOCKBLOCKS_API_KEY not set")
+        return None
+
+    api = NockBlocksAPI(NOCKBLOCKS_API_KEY)
+    try:
+        metrics_task = api.fetch_metrics()
+        fund_task = api.get_transactions_by_address(PROTOCOL_FUND_ADDRESS, limit=1, offset=0)
+        metrics, fund_summary = await asyncio.gather(metrics_task, fund_task)
+        if not metrics:
+            return None
+
+        fund_nock = current_balance_nock_from_tx_address_result(fund_summary)
+
+        price = await fetch_nock_usd_price()
+        fund_usd = (fund_nock * price) if fund_nock is not None and price is not None else None
+
+        return EmissionsDisplay(
+            metrics=metrics,
+            fund_nock=fund_nock,
+            fund_usd=fund_usd,
+            nock_usd_price=price,
+        )
+    finally:
+        await api.close()
 
 
 async def get_metrics() -> Optional[MiningMetrics]:
