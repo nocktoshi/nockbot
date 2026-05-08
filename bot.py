@@ -199,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Tap the button below to start a private conversation where you can:\n"
             "• Subscribe to alerts\n"
             "• Set custom thresholds\n\n"
-            "You can still use /proofrate, /tip, and /volume here to get the latest metrics!",
+            "You can still use /proofrate, /asert, /emissions, /tip, and /volume here!",
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
         )
@@ -220,7 +220,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⛏️ <b>Nockbot</b>\n\n"
         "I track the proofrate and mining metrics for the Nockchain network.\n\n"
         "<b>📊 Free Commands:</b>\n"
-        "• /proofrate - Get current mining metrics\n"
+        "• /proofrate - Network mining stats (difficulty, proofrate, cadence)\n"
+        "• /asert - ASERT difficulty-adjustment status\n"
+        "• /emissions - Block reward and NOCK/min issuance\n"
         "• /tip - Get latest block info\n"
         "• /volume - Get 24h transaction volume\n\n"
         "<b>⭐ Premium Alerts:</b>\n"
@@ -242,11 +244,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "⛏️ <b>Nockbot - Help</b>\n\n"
         "<b>📊 Free Commands:</b>\n\n"
         "<b>/proofrate</b>\n"
-        "Get current network mining metrics including:\n"
-        "• Current difficulty\n"
-        "• Network proofrate (hashrate)\n"
-        "• Average block time\n"
-        "• Epoch progress\n\n"
+        "Network mining metrics: difficulty, proofrate (100 blocks), average block time vs 150s target, cadence vs target, latest height.\n\n"
+        "<b>/asert</b>\n"
+        "ASERT status: blocks since anchor, time since anchor, schedule drift, implied target factor, half-life.\n\n"
+        "<b>/emissions</b>\n"
+        "Aletheia emissions at current height: block reward (NOCK) and issuance (NOCK/min).\n\n"
         "<b>/tip</b>\n"
         "Get the latest block info:\n"
         "• Block height and epoch\n"
@@ -280,6 +282,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+_METRICS_FETCH_ERROR = (
+    "❌ <b>Error fetching metrics</b>\n\n"
+    "Could not retrieve data from NockBlocks. Please try again later.\n\n"
+    "🔗 <a href='https://nockblocks.com/metrics?tab=mining'>Check NockBlocks directly</a>"
+)
+
+
 async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /hashrate and /proofrate commands."""
     # Send "typing" action while fetching
@@ -298,9 +307,47 @@ async def hashrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     else:
         await update.message.reply_text(
-            "❌ <b>Error fetching metrics</b>\n\n"
-            "Could not retrieve data from NockBlocks. Please try again later.\n\n"
-            "🔗 <a href='https://nockblocks.com/metrics?tab=mining'>Check NockBlocks directly</a>",
+            _METRICS_FETCH_ERROR,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+
+async def asert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /asert — ASERT difficulty-adjustment status."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    metrics = await get_metrics()
+    if metrics:
+        global last_metrics
+        last_metrics = metrics
+        await update.message.reply_text(
+            metrics.format_asert_message(),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    else:
+        await update.message.reply_text(
+            _METRICS_FETCH_ERROR,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+
+async def emissions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /emissions — block reward and issuance."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    metrics = await get_metrics()
+    if metrics:
+        global last_metrics
+        last_metrics = metrics
+        await update.message.reply_text(
+            metrics.format_emissions_message(),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    else:
+        await update.message.reply_text(
+            _METRICS_FETCH_ERROR,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
@@ -1148,6 +1195,8 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("hashrate", hashrate))
     app.add_handler(CommandHandler("proofrate", hashrate))
+    app.add_handler(CommandHandler("asert", asert_command))
+    app.add_handler(CommandHandler("emissions", emissions_command))
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
     app.add_handler(CommandHandler("subscription", subscription))
@@ -1185,6 +1234,8 @@ def main() -> None:
         private_commands = [
             BotCommand("start", "Start the bot and see options"),
             BotCommand("proofrate", "Get current mining metrics"),
+            BotCommand("asert", "ASERT difficulty-adjustment status"),
+            BotCommand("emissions", "Block reward and NOCK/min issuance"),
             BotCommand("tip", "Get latest block info"),
             BotCommand("volume", "Get 24h transaction volume"),
             BotCommand("subscribe", "Subscribe to proofrate alerts"),
@@ -1200,6 +1251,8 @@ def main() -> None:
         group_commands = [
             BotCommand("start", "Start private chat with bot"),
             BotCommand("proofrate", "Get current mining metrics"),
+            BotCommand("asert", "ASERT difficulty-adjustment status"),
+            BotCommand("emissions", "Block reward and NOCK/min issuance"),
             BotCommand("tip", "Get latest block info"),
             BotCommand("volume", "Get 24h transaction volume"),
             BotCommand("status", "Check bot status"),
